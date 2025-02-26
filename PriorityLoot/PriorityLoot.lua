@@ -21,7 +21,6 @@ PL.timerActive = false
 PL.timerEndTime = 0
 PL.timerFrame = nil
 PL.playerPriority = nil -- Track current player's selected priority
-PL.lastSharedItemMessage = nil -- Track last shared item to prevent duplicate messages
 
 -- Item tracking variables
 PL.currentLootItemLink = nil
@@ -299,10 +298,7 @@ function PL:SetCurrentItem(itemLink)
     self.currentLootItemTexture = itemTexture
     
     -- Broadcast item to other players if you're the host
-    if self.isHost then
-        -- Save the item link to prevent duplicate messages
-        self.lastSharedItemMessage = itemLink
-        
+    if self.isHost then        
         -- Use a specific message format that won't break item links
         C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, self.COMM_ITEM .. ":" .. itemLink, self:GetDistributionChannel())
     end
@@ -323,7 +319,6 @@ function PL:ClearCurrentItem()
     -- Clear local item data
     self.currentLootItemLink = nil
     self.currentLootItemTexture = nil
-    self.lastSharedItemMessage = nil -- Reset the last shared item
     
     -- Update UI
     self:UpdateUI()
@@ -355,6 +350,7 @@ function PL:StartRollSession()
     
     -- Send item link as a separate message if available
     if self.currentLootItemLink then
+        -- Share item again just to be sure
         C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, self.COMM_ITEM .. ":" .. self.currentLootItemLink, self:GetDistributionChannel())
         
         -- Show raid warning with item
@@ -500,176 +496,164 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
     local normalizedSender = self:NormalizeName(sender)
     local normalizedPlayer = self:NormalizeName(self.playerFullName)
     
-    if message:find(self.COMM_START) == 1 then
-        -- Someone started a roll session
-        self.sessionActive = true
-        
-        -- Show the window for all players when a session starts
-        self.PriorityLootFrame:Show()
-        
-        -- Set host status only if we started the session
-        if normalizedSender == normalizedPlayer then
-            self.isHost = true
-        else
+    if  normalizedPlayer ~= normalizedSender then
+        if message:find(self.COMM_START) == 1 then
+            -- Someone started a roll session
+            self.sessionActive = true
+            
+            -- Show the window for all players when a session starts
+            self.PriorityLootFrame:Show()
+
             self.isHost = false
-        end
-        
-        self.sessionHost = sender
-        self.participants = {}
-        self.playerPriority = nil -- Reset player's priority
-        self.lastSharedItemMessage = nil -- Reset the last shared item
-        
-        -- Don't try to parse item from START message
-        -- Item will come in a separate ITEM message
-        print("|cff00ff00" .. self:GetDisplayName(sender) .. " started a roll session.|r")
-        
-        self:UpdateUI()
-        
-    elseif message:find(self.COMM_ITEM) == 1 then
-        -- Item info from host
-        -- Extract the item link portion after the COMM_ITEM: prefix
-        local itemLink = message:sub(#(self.COMM_ITEM .. ":") + 1)
-        
-        if itemLink and itemLink ~= "" then
-            -- Check if this is a duplicate message
-            if self.lastSharedItemMessage ~= itemLink then
-                self.lastSharedItemMessage = itemLink
-                
+            self.sessionHost = sender
+            self.participants = {}
+            self.playerPriority = nil -- Reset player's priority
+            
+            -- Don't try to parse item from START message
+            -- Item will come in a separate ITEM message
+            print("|cff00ff00" .. self:GetDisplayName(sender) .. " started a roll session.|r")
+            
+            self:UpdateUI()
+
+        elseif message:find(self.COMM_ITEM) == 1 then
+            -- Show the window for all players when an item is selected
+            self.PriorityLootFrame:Show()
+
+            -- Item info from host
+            -- Extract the item link portion after the COMM_ITEM: prefix
+            local itemLink = message:sub(#(self.COMM_ITEM .. ":") + 1)
+            
+            if itemLink and itemLink ~= "" then
                 self:SetCurrentItem(itemLink)
                 
-                -- Only print the message if the item is newly shared
                 print("|cff00ff00" .. self:GetDisplayName(sender) .. " shared item: " .. itemLink .. ".|r")
-            else
-                -- Just set the item without printing a message
-                self:SetCurrentItem(itemLink)
             end
-        end
-    
-    elseif message == self.COMM_CLEAR then
-        -- Host has cleared the item, clear it for everyone
-        print("|cffff9900Item cleared by " .. self:GetDisplayName(sender) .. ".|r")
         
-        -- Clear local item data but don't re-broadcast
-        self.currentLootItemLink = nil
-        self.currentLootItemTexture = nil
-        self.lastSharedItemMessage = nil
-        
-        -- Update UI
-        self:UpdateUI()
-        
-    elseif message:find(self.COMM_JOIN) == 1 then
-        -- Someone joined the roll or changed their priority
-        local parts = {strsplit(":", message)}
-        if parts[2] then
-            local namePriority = {strsplit(",", parts[2])}
-            if namePriority[1] and namePriority[2] then
-                local name = namePriority[1]
-                local priority = tonumber(namePriority[2])
-                
-                -- Check if this is the current player
-                if self:NormalizeName(name) == normalizedPlayer then
-                    self.playerPriority = priority
+        elseif message == self.COMM_CLEAR then
+            -- Host has cleared the item, clear it for everyone
+            print("|cffff9900Item cleared by " .. self:GetDisplayName(sender) .. ".|r")
+            
+            -- Clear local item data but don't re-broadcast
+            self.currentLootItemLink = nil
+            self.currentLootItemTexture = nil
+            
+            -- Update UI
+            self:UpdateUI()
+            
+        elseif message:find(self.COMM_JOIN) == 1 then
+            -- Someone joined the roll or changed their priority
+            local parts = {strsplit(":", message)}
+            if parts[2] then
+                local namePriority = {strsplit(",", parts[2])}
+                if namePriority[1] and namePriority[2] then
+                    local name = namePriority[1]
+                    local priority = tonumber(namePriority[2])
+                    
+                    -- Check if this is the current player
+                    if self:NormalizeName(name) == normalizedPlayer then
+                        self.playerPriority = priority
+                    end
+                    
+                    -- Add or update participant in the list
+                    local existingEntry = nil
+                    for i, data in ipairs(self.participants) do
+                        if self:NormalizeName(data.name) == self:NormalizeName(name) then
+                            data.priority = priority
+                            existingEntry = data
+                            break
+                        end
+                    end
+                    
+                    if not existingEntry then
+                        -- New participant
+                        table.insert(self.participants, {name = name, priority = priority})
+                        print("|cff00ff00" .. self:GetDisplayName(name) .. " joined the roll.|r")
+                    else
+                        -- Existing participant changed priority
+                        print("|cff00ff00" .. self:GetDisplayName(name) .. " changed priority.|r")
+                    end
+                    
+                    self:UpdateUI()
                 end
+            end
+            
+        elseif message:find(self.COMM_LEAVE) == 1 then
+            -- Someone left the roll
+            local parts = {strsplit(":", message)}
+            if parts[2] then
+                local leavingPlayer = parts[2]
                 
-                -- Add or update participant in the list
-                local existingEntry = nil
+                -- Remove player from participants list
                 for i, data in ipairs(self.participants) do
-                    if self:NormalizeName(data.name) == self:NormalizeName(name) then
-                        data.priority = priority
-                        existingEntry = data
+                    if self:NormalizeName(data.name) == self:NormalizeName(leavingPlayer) then
+                        table.remove(self.participants, i)
+                        print("|cffff9900" .. self:GetDisplayName(leavingPlayer) .. " left the roll.|r")
                         break
                     end
                 end
                 
-                if not existingEntry then
-                    -- New participant
-                    table.insert(self.participants, {name = name, priority = priority})
-                    print("|cff00ff00" .. self:GetDisplayName(name) .. " joined the roll.|r")
-                else
-                    -- Existing participant changed priority
-                    print("|cff00ff00" .. self:GetDisplayName(name) .. " changed priority.|r")
-                end
-                
                 self:UpdateUI()
             end
-        end
-        
-    elseif message:find(self.COMM_LEAVE) == 1 then
-        -- Someone left the roll
-        local parts = {strsplit(":", message)}
-        if parts[2] then
-            local leavingPlayer = parts[2]
             
-            -- Remove player from participants list
-            for i, data in ipairs(self.participants) do
-                if self:NormalizeName(data.name) == self:NormalizeName(leavingPlayer) then
-                    table.remove(self.participants, i)
-                    print("|cffff9900" .. self:GetDisplayName(leavingPlayer) .. " left the roll.|r")
-                    break
+        elseif message:find(self.COMM_TIMER) == 1 then
+            -- Timer sync from host
+            local parts = {strsplit(":", message)}
+            if parts[2] and not self.isHost then
+                local remainingTime = tonumber(parts[2])
+                if remainingTime and remainingTime > 0 then
+                    -- Update the timer display for non-hosts
+                    if not self.timerActive then
+                        -- Start a local timer for display purposes only
+                        self.timerActive = true
+                        
+                        if not self.timerFrame then
+                            self.timerFrame = CreateFrame("Frame")
+                        end
+                        
+                        self.timerFrame:SetScript("OnUpdate", nil)
+                    end
+                    
+                    self:UpdateTimerDisplay(remainingTime)
+                elseif remainingTime and remainingTime <= 0 then
+                    -- Timer ended
+                    self:StopTimer()
                 end
             end
+            
+        elseif message:find(self.COMM_STOP) == 1 then
+            -- Session ended with results
+            self.sessionActive = false
+            
+            -- Stop the timer if active
+            if self.timerActive then
+                self:StopTimer()
+            end
+            
+            -- Parse participant list with priorities
+            self.participants = {}
+            local parts = {strsplit(":", message)}
+            for i = 2, #parts do
+                local namePriority = {strsplit(",", parts[i])}
+                if namePriority[1] and namePriority[2] then
+                    table.insert(self.participants, {
+                        name = namePriority[1],
+                        priority = tonumber(namePriority[2])
+                    })
+                end
+            end
+            
+            -- Sort participants by priority (lower is better)
+            table.sort(self.participants, function(a, b)
+                return a.priority < b.priority
+            end)
+            
+            print("|cffff9900Roll session ended by " .. self:GetDisplayName(sender) .. ". Results are displayed.|r")
+            
+            -- Important: We no longer clear the item on roll end
+            -- The item remains displayed until cleared manually or a new roll starts
             
             self:UpdateUI()
         end
-        
-    elseif message:find(self.COMM_TIMER) == 1 then
-        -- Timer sync from host
-        local parts = {strsplit(":", message)}
-        if parts[2] and not self.isHost then
-            local remainingTime = tonumber(parts[2])
-            if remainingTime and remainingTime > 0 then
-                -- Update the timer display for non-hosts
-                if not self.timerActive then
-                    -- Start a local timer for display purposes only
-                    self.timerActive = true
-                    
-                    if not self.timerFrame then
-                        self.timerFrame = CreateFrame("Frame")
-                    end
-                    
-                    self.timerFrame:SetScript("OnUpdate", nil)
-                end
-                
-                self:UpdateTimerDisplay(remainingTime)
-            elseif remainingTime and remainingTime <= 0 then
-                -- Timer ended
-                self:StopTimer()
-            end
-        end
-        
-    elseif message:find(self.COMM_STOP) == 1 then
-        -- Session ended with results
-        self.sessionActive = false
-        
-        -- Stop the timer if active
-        if self.timerActive then
-            self:StopTimer()
-        end
-        
-        -- Parse participant list with priorities
-        self.participants = {}
-        local parts = {strsplit(":", message)}
-        for i = 2, #parts do
-            local namePriority = {strsplit(",", parts[i])}
-            if namePriority[1] and namePriority[2] then
-                table.insert(self.participants, {
-                    name = namePriority[1],
-                    priority = tonumber(namePriority[2])
-                })
-            end
-        end
-        
-        -- Sort participants by priority (lower is better)
-        table.sort(self.participants, function(a, b)
-            return a.priority < b.priority
-        end)
-        
-        print("|cffff9900Roll session ended by " .. self:GetDisplayName(sender) .. ". Results are displayed.|r")
-        
-        -- Important: We no longer clear the item on roll end
-        -- The item remains displayed until cleared manually or a new roll starts
-        
-        self:UpdateUI()
     end
 end
 
