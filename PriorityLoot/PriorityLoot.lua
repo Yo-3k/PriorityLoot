@@ -87,7 +87,7 @@ end
 function PL:IsMasterLooter()
     if not IsInRaid() then return false end
     
-    local lootMethod, masterLooterPartyID = GetLootMethod()
+    local lootMethod, masterLooterPartyID, masterlooterRaidID = GetLootMethod()
     if lootMethod ~= "master" then return false end
     
     if masterLooterPartyID == 0 then
@@ -95,7 +95,7 @@ function PL:IsMasterLooter()
         return true
     else
         -- Get master looter name
-        local masterLooterName = UnitName("raid" .. masterLooterPartyID)
+        local masterLooterName = UnitName("raid" .. masterlooterRaidID)
         local playerName = UnitName("player")
         return masterLooterName == playerName
     end
