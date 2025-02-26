@@ -21,6 +21,11 @@ PL.timerActive = false
 PL.timerEndTime = 0
 PL.timerFrame = nil
 PL.playerPriority = nil -- Track current player's selected priority
+PL.lastSharedItemMessage = nil -- Track last shared item to prevent duplicate messages
+
+-- Item tracking variables
+PL.currentLootItemLink = nil
+PL.currentLootItemTexture = nil
 
 -- Communication
 PL.COMM_PREFIX = "PriorityLoot"
@@ -29,6 +34,8 @@ PL.COMM_START = "START"
 PL.COMM_STOP = "STOP"
 PL.COMM_TIMER = "TIMER" -- For timer sync
 PL.COMM_LEAVE = "LEAVE" -- For removing player from roll
+PL.COMM_ITEM = "ITEM"   -- For sharing item data
+PL.COMM_CLEAR = "CLEAR" -- For clearing item data
 
 -- Class colors table
 PL.CLASS_COLORS = {
@@ -51,6 +58,11 @@ function PL:GetPlayerFullName()
     else
         return name
     end
+end
+
+-- Get the appropriate distribution channel based on current group
+function PL:GetDistributionChannel()
+    return IsInRaid() and "RAID" or (IsInGroup() and "PARTY" or "WHISPER")
 end
 
 -- Normalize a name to handle server names
@@ -112,8 +124,7 @@ end
 function PL:BroadcastTimerInfo(remainingTime)
     if not self.isHost then return end
     
-    local distribution = IsInRaid() and "RAID" or "PARTY"
-    C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, self.COMM_TIMER .. ":" .. remainingTime, distribution)
+    C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, self.COMM_TIMER .. ":" .. remainingTime, self:GetDistributionChannel())
 end
 
 -- Get class color for a player
@@ -178,8 +189,7 @@ function PL:UpdatePlayerPriority(newPriority)
     end
     
     -- Broadcast join message with updated priority
-    local distribution = IsInRaid() and "RAID" or "PARTY"
-    C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, self.COMM_JOIN .. ":" .. self.playerFullName .. "," .. newPriority, distribution)
+    C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, self.COMM_JOIN .. ":" .. self.playerFullName .. "," .. newPriority, self:GetDistributionChannel())
     
     -- Update UI
     self:UpdateUI()
@@ -207,8 +217,7 @@ function PL:ClearPlayerRoll()
     self.playerPriority = nil
     
     -- Broadcast removal to all raid members
-    local distribution = IsInRaid() and "RAID" or "PARTY"
-    C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, self.COMM_LEAVE .. ":" .. self.playerFullName, distribution)
+    C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, self.COMM_LEAVE .. ":" .. self.playerFullName, self:GetDistributionChannel())
     
     print("|cffff9900You have removed yourself from the roll.|r")
     
@@ -278,6 +287,48 @@ function PL:StopTimer()
     end
 end
 
+-- Set current item for loot roll
+function PL:SetCurrentItem(itemLink)
+    if not itemLink then return end
+    
+    -- Store the item link
+    self.currentLootItemLink = itemLink
+    
+    -- Extract the item texture (for display purposes)
+    local _, _, _, _, _, _, _, _, _, itemTexture = GetItemInfo(itemLink)
+    self.currentLootItemTexture = itemTexture
+    
+    -- Broadcast item to other players if you're the host
+    if self.isHost then
+        -- Save the item link to prevent duplicate messages
+        self.lastSharedItemMessage = itemLink
+        
+        -- Use a specific message format that won't break item links
+        C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, self.COMM_ITEM .. ":" .. itemLink, self:GetDistributionChannel())
+    end
+    
+    -- Update UI
+    self:UpdateUI()
+end
+
+-- Clear the current item and broadcast to all players if host
+function PL:ClearCurrentItem()
+    -- Only broadcast if we're the host and there's an item to clear
+    if self.isHost and self.currentLootItemLink then
+        -- Broadcast clear item command
+        C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, self.COMM_CLEAR, self:GetDistributionChannel())
+        print("|cffff9900Item cleared.|r")
+    end
+    
+    -- Clear local item data
+    self.currentLootItemLink = nil
+    self.currentLootItemTexture = nil
+    self.lastSharedItemMessage = nil -- Reset the last shared item
+    
+    -- Update UI
+    self:UpdateUI()
+end
+
 -- Start a roll session
 function PL:StartRollSession()
     -- Check if in raid
@@ -299,13 +350,33 @@ function PL:StartRollSession()
     self.participants = {}
     self.playerPriority = nil -- Reset player's priority
     
-    -- Broadcast start message
-    C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, self.COMM_START, "RAID")
+    -- Broadcast start message - send item link in a separate message to ensure it's intact
+    C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, self.COMM_START, self:GetDistributionChannel())
+    
+    -- Send item link as a separate message if available
+    if self.currentLootItemLink then
+        C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, self.COMM_ITEM .. ":" .. self.currentLootItemLink, self:GetDistributionChannel())
+        
+        -- Show raid warning with item
+        local message = "Roll started for " .. self.currentLootItemLink
+        if IsInRaid() then
+            SendChatMessage(message, "RAID_WARNING")
+        else
+            SendChatMessage(message, "PARTY")
+        end
+    else
+        local message = "Roll started"
+        if IsInRaid() then
+            SendChatMessage(message, "RAID_WARNING")
+        else
+            SendChatMessage(message, "PARTY")
+        end
+    end
     
     print("|cff00ff00You started a roll session.|r")
     
     -- Start timer if enabled
-    if self.timerCheckbox:GetChecked() then
+    if self.timerCheckbox and self.timerCheckbox:GetChecked() then
         -- Get duration from edit box
         local inputDuration = tonumber(self.timerEditBox:GetText()) or self.timerDuration
         
@@ -338,11 +409,46 @@ function PL:StopRollSession()
             message = message .. ":" .. data.name .. "," .. data.priority
         end
         
-        C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, message, "RAID")
+        C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, message, self:GetDistributionChannel())
         
         print("|cffff9900Roll session ended. Results are displayed.|r")
         
-        -- Update UI
+        -- Sort participants by priority (lower is better)
+        table.sort(self.participants, function(a, b)
+            return a.priority < b.priority
+        end)
+        
+        -- Display raid warning with results
+        if #self.participants > 0 then
+            local resultMessage = ""
+            if self.currentLootItemLink then
+                resultMessage = "Roll results for " .. self.currentLootItemLink .. ": "
+            else
+                resultMessage = "Roll results: "
+            end
+            
+            -- Find all players with the same highest priority
+            local highestPriority = self.participants[1].priority
+            local winners = {}
+            
+            for i, data in ipairs(self.participants) do
+                if data.priority == highestPriority then
+                    table.insert(winners, self:GetDisplayName(data.name) .. " (" .. data.priority .. ")")
+                else
+                    -- Stop once we reach a different priority
+                    break
+                end
+            end
+            
+            -- Add all winners to the message
+            resultMessage = resultMessage .. table.concat(winners, ", ")
+            
+            -- Use consistent channel for announcements
+            local chatChannel = IsInRaid() and "RAID_WARNING" or "PARTY"
+            SendChatMessage(resultMessage, chatChannel)
+        end
+        
+        -- Update UI - *No longer clearing the item when roll finishes*
         self:UpdateUI()
     else
         print("|cffff0000You're not the host or no session is active.|r")
@@ -411,7 +517,44 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
         self.sessionHost = sender
         self.participants = {}
         self.playerPriority = nil -- Reset player's priority
+        self.lastSharedItemMessage = nil -- Reset the last shared item
+        
+        -- Don't try to parse item from START message
+        -- Item will come in a separate ITEM message
         print("|cff00ff00" .. self:GetDisplayName(sender) .. " started a roll session.|r")
+        
+        self:UpdateUI()
+        
+    elseif message:find(self.COMM_ITEM) == 1 then
+        -- Item info from host
+        -- Extract the item link portion after the COMM_ITEM: prefix
+        local itemLink = message:sub(#(self.COMM_ITEM .. ":") + 1)
+        
+        if itemLink and itemLink ~= "" then
+            -- Check if this is a duplicate message
+            if self.lastSharedItemMessage ~= itemLink then
+                self.lastSharedItemMessage = itemLink
+                
+                self:SetCurrentItem(itemLink)
+                
+                -- Only print the message if the item is newly shared
+                print("|cff00ff00" .. self:GetDisplayName(sender) .. " shared item: " .. itemLink .. ".|r")
+            else
+                -- Just set the item without printing a message
+                self:SetCurrentItem(itemLink)
+            end
+        end
+    
+    elseif message == self.COMM_CLEAR then
+        -- Host has cleared the item, clear it for everyone
+        print("|cffff9900Item cleared by " .. self:GetDisplayName(sender) .. ".|r")
+        
+        -- Clear local item data but don't re-broadcast
+        self.currentLootItemLink = nil
+        self.currentLootItemTexture = nil
+        self.lastSharedItemMessage = nil
+        
+        -- Update UI
         self:UpdateUI()
         
     elseif message:find(self.COMM_JOIN) == 1 then
@@ -522,6 +665,10 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
         end)
         
         print("|cffff9900Roll session ended by " .. self:GetDisplayName(sender) .. ". Results are displayed.|r")
+        
+        -- Important: We no longer clear the item on roll end
+        -- The item remains displayed until cleared manually or a new roll starts
+        
         self:UpdateUI()
     end
 end

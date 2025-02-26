@@ -16,6 +16,12 @@ PL.timerEditBox = nil
 PL.timerDisplay = nil
 PL.clearButton = nil -- Clear button
 
+-- Item display elements
+PL.itemDropFrame = nil
+PL.itemDisplayFrame = nil
+PL.itemIcon = nil
+PL.itemText = nil
+
 -- Update the timer display
 function PL:UpdateTimerDisplay(remainingTime)
     if not self.timerDisplay then return end
@@ -88,27 +94,23 @@ end
 function PL:UpdateUI()
     if not self.PriorityLootFrame then return end
     
-    -- Update buttons based on role and session state
+    -- Session state logic
+    local canStartRoll = IsInRaid() and self:IsMasterLooter()
+    
+    -- Basic button state
     if self.sessionActive then
-        -- Disable start button during active sessions
         self.startButton:SetEnabled(false)
-        
-        -- Disable timer controls during active session
         self.timerCheckbox:SetEnabled(false)
         self.timerEditBox:SetEnabled(false)
         
-        -- Enable stop button ONLY for the host
-        if self.isHost then
-            self.stopButton:SetEnabled(true)
-        else
-            self.stopButton:SetEnabled(false)
-        end
+        -- Enable stop button for host only
+        self.stopButton:SetEnabled(self.isHost)
         
-        -- Enable priority buttons for selection/changes during active session
+        -- Enable priority buttons
         for i = 1, 19 do
             self.priorityButtons[i]:SetEnabled(true)
             
-            -- Highlight current selection (if any)
+            -- Highlight current selection
             if self.playerPriority and self.playerPriority == i then
                 self.priorityButtons[i]:SetNormalFontObject("GameFontHighlight")
                 self.priorityButtons[i]:LockHighlight()
@@ -118,64 +120,261 @@ function PL:UpdateUI()
             end
         end
         
-        -- Enable the clear button during active session
+        -- Enable clear button
         self.clearButton:SetEnabled(true)
         
-        -- Update player's priority text
-        if self.playerPriority then
-            self.yourPriorityText:SetText("Your priority: " .. self.playerPriority)
-        else
-            self.yourPriorityText:SetText("Your priority: None")
+        -- Update priority text
+        if self.yourPriorityText then
+            if self.playerPriority then
+                self.yourPriorityText:SetText("Your priority: " .. self.playerPriority)
+            else
+                self.yourPriorityText:SetText("Your priority: None")
+            end
         end
     else
-        -- Only enable Start button for Master Looter in raid
-        local canStartRoll = IsInRaid() and self:IsMasterLooter()
+        -- Not in session
         self.startButton:SetEnabled(canStartRoll)
         self.stopButton:SetEnabled(false)
-        
-        -- Enable timer controls only when no session is active and player is master looter
         self.timerCheckbox:SetEnabled(canStartRoll)
         self.timerEditBox:SetEnabled(canStartRoll and self.timerCheckbox:GetChecked())
         
-        -- Disable and reset priority buttons
+        -- Disable priority buttons
         for i = 1, 19 do
             self.priorityButtons[i]:SetEnabled(false)
             self.priorityButtons[i]:SetNormalFontObject("GameFontNormal")
             self.priorityButtons[i]:UnlockHighlight()
         end
         
-        -- Disable the clear button when no session is active
+        -- Disable clear button
         self.clearButton:SetEnabled(false)
         
         -- Reset player's priority display
         self.playerPriority = nil
-        self.yourPriorityText:SetText("Your priority: None")
+        if self.yourPriorityText then
+            self.yourPriorityText:SetText("Your priority: None")
+        end
     end
     
-    -- Update session info text
-    if self.sessionActive then
-        if self.isHost then
-            self.sessionInfoText:SetText("You started a roll session")
+    -- Session info text
+    if self.sessionInfoText then
+        if self.sessionActive then
+            if self.isHost then
+                self.sessionInfoText:SetText("You started a roll session")
+            else
+                self.sessionInfoText:SetText("Roll session started by " .. self:GetDisplayName(self.sessionHost))
+            end
         else
-            self.sessionInfoText:SetText("Roll session started by " .. self:GetDisplayName(self.sessionHost))
+            self.sessionInfoText:SetText("No active roll session")
         end
-    else
-        self.sessionInfoText:SetText("No active roll session")
     end
+    
+    -- Item display handling
+    self:UpdateItemDisplay()
     
     -- Update participants list
     self:UpdateParticipantsList()
+end
+
+-- Check if player is host or is allowed to manage items
+function PL:CanManageItems()
+    -- Only the host (master looter) can manage items
+    return self.isHost or (not self.sessionActive and self:IsMasterLooter())
+end
+
+-- Handle item display updates separately
+function PL:UpdateItemDisplay()
+    -- Item drop frame visibility - only show to host if no item and not in session
+    if self.itemDropFrame then
+        if self.sessionActive or not self:CanManageItems() or self.currentLootItemLink then
+            self.itemDropFrame:Hide()
+        else
+            self.itemDropFrame:Show()
+        end
+    end
+    
+    -- Item display frame visibility
+    if self.itemDisplayFrame then
+        if self.currentLootItemLink then
+            self.itemDisplayFrame:Show()
+            if self.itemIcon then
+                self.itemIcon:SetTexture(self.currentLootItemTexture or "Interface\\Icons\\INV_Misc_QuestionMark")
+            end
+            if self.itemText then
+                self.itemText:SetText(self.currentLootItemLink)
+            end
+            
+            -- Only show the clear button for host and not during active session
+            if self.clearItemButton then
+                if self.sessionActive or not self:CanManageItems() then
+                    self.clearItemButton:Hide()
+                else
+                    self.clearItemButton:Show()
+                end
+            end
+        else
+            self.itemDisplayFrame:Hide()
+        end
+    end
+end
+
+-- Setup the item drop frame with Classic SoD compatibility
+function PL:CreateItemDropFrame()
+    if self.itemDropFrame then return self.itemDropFrame end
+    
+    -- First check if sessionInfoText exists
+    if not self.sessionInfoText then
+        print("|cffff0000Error: Cannot create item frame before session info is initialized|r")
+        return nil
+    end
+    
+    -- Create a container frame for item drop functionality
+    local dropFrame = CreateFrame("Button", "PriorityLootItemDropFrame", self.PriorityLootFrame, "BackdropTemplate")
+    dropFrame:SetSize(220, 40)
+    dropFrame:SetPoint("TOP", self.sessionInfoText, "BOTTOM", 0, -30)
+    
+    -- Appearance - specify backdrop explicitly for Classic compatibility
+    local backdrop = {
+        bgFile = "Interface/Tooltips/UI-Tooltip-Background",
+        edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
+        tile = true,
+        tileSize = 16,
+        edgeSize = 16,
+        insets = { left = 4, right = 4, top = 4, bottom = 4 }
+    }
+    dropFrame:SetBackdrop(backdrop)
+    dropFrame:SetBackdropColor(0.1, 0.1, 0.1, 0.8)
+    
+    -- Add text for instructions
+    local dropText = dropFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    dropText:SetPoint("CENTER")
+    dropText:SetText("Drag item here")
+    
+    -- Make it receive item drag & drop
+    dropFrame:RegisterForDrag("LeftButton")
+    dropFrame:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    
+    -- Item display frame (shown when an item is selected)
+    self.itemDisplayFrame = CreateFrame("Frame", "PriorityLootItemDisplay", self.PriorityLootFrame, "BackdropTemplate")
+    self.itemDisplayFrame:SetSize(220, 40)
+    self.itemDisplayFrame:SetPoint("TOP", self.sessionInfoText, "BOTTOM", 0, -30)
+    self.itemDisplayFrame:SetBackdrop(backdrop)
+    self.itemDisplayFrame:SetBackdropColor(0.1, 0.1, 0.1, 0.8)
+    
+    -- Item icon
+    self.itemIcon = self.itemDisplayFrame:CreateTexture("PriorityLootItemIcon", "ARTWORK")
+    self.itemIcon:SetSize(32, 32)
+    self.itemIcon:SetPoint("LEFT", 8, 0)
+    
+    -- Item text
+    self.itemText = self.itemDisplayFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    self.itemText:SetPoint("LEFT", self.itemIcon, "RIGHT", 8, 0)
+    self.itemText:SetPoint("RIGHT", -8, 0)
+    self.itemText:SetJustifyH("LEFT")
+    self.itemText:SetWordWrap(false)
+    
+    -- Set up item display frame
+    self.itemDisplayFrame:EnableMouse(true)
+    
+    -- Set up tooltip to right of frame
+    self.itemDisplayFrame:SetScript("OnEnter", function()
+        if self.currentLootItemLink then
+            GameTooltip:SetOwner(self.itemDisplayFrame, "ANCHOR_NONE")
+            GameTooltip:SetPoint("LEFT", self.PriorityLootFrame, "RIGHT", 5, 0)
+            GameTooltip:SetHyperlink(self.currentLootItemLink)
+            GameTooltip:Show()
+        end
+    end)
+    
+    self.itemDisplayFrame:SetScript("OnLeave", function()
+        GameTooltip:Hide()
+    end)
+    
+    -- Setup drag and drop functionality
+    self.itemDisplayFrame:SetScript("OnReceiveDrag", function()
+        -- Only host can drag items
+        if not self:CanManageItems() or self.sessionActive then return end
+        
+        local infoType, itemID, itemLink = GetCursorInfo()
+        if infoType == "item" and itemLink then
+            self:SetCurrentItem(itemLink)
+            ClearCursor()
+        end
+    end)
+    
+    self.itemDisplayFrame:SetScript("OnMouseDown", function(frame, button)
+        -- Only host can change items
+        if not self:CanManageItems() or self.sessionActive then return end
+        
+        if button == "LeftButton" then
+            local infoType, itemID, itemLink = GetCursorInfo()
+            if infoType == "item" and itemLink then
+                self:SetCurrentItem(itemLink)
+                ClearCursor()
+            end
+        end
+    end)
+    
+    -- Clear button for the item
+    local clearItemButton = CreateFrame("Button", nil, self.itemDisplayFrame, "UIPanelCloseButton")
+    clearItemButton:SetSize(20, 20)
+    clearItemButton:SetPoint("TOPRIGHT", -2, -2)
+    clearItemButton:SetScript("OnClick", function()
+        -- Only host can clear items and not during active session
+        if not self:CanManageItems() or self.sessionActive then return end
+        
+        if self.ClearCurrentItem then
+            self:ClearCurrentItem()
+        end
+    end)
+    self.clearItemButton = clearItemButton
+    
+    -- Hide item display by default
+    self.itemDisplayFrame:Hide()
+    
+    -- Setup script handlers for the drop frame
+    dropFrame:SetScript("OnReceiveDrag", function()
+        -- Only host can add items
+        if not self:CanManageItems() then return end
+        
+        local infoType, itemID, itemLink = GetCursorInfo()
+        if infoType == "item" and itemLink then
+            self:SetCurrentItem(itemLink)
+            dropFrame:Hide()
+            ClearCursor()
+        end
+    end)
+    
+    dropFrame:SetScript("OnMouseDown", function(frame, button)
+        -- Only host can add items
+        if not self:CanManageItems() then return end
+        
+        if button == "LeftButton" then
+            local infoType, itemID, itemLink = GetCursorInfo()
+            if infoType == "item" and itemLink then
+                self:SetCurrentItem(itemLink)
+                dropFrame:Hide()
+                ClearCursor()
+            end
+        end
+    end)
+    
+    -- Store reference to the drop frame
+    self.itemDropFrame = dropFrame
+    
+    return dropFrame
 end
 
 -- Create the UI
 function PL:InitUI()
     -- Main frame
     self.PriorityLootFrame = CreateFrame("Frame", "PriorityLootFrame", UIParent, "BackdropTemplate")
-    self.PriorityLootFrame:SetSize(260, 460) -- More compact width, slightly taller to accommodate everything
+    self.PriorityLootFrame:SetSize(260, 500)
     self.PriorityLootFrame:SetPoint("CENTER")
     self.PriorityLootFrame:SetBackdrop({
         bgFile = "Interface/Tooltips/UI-Tooltip-Background",
         edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
+        tile = true,
+        tileSize = 16,
         edgeSize = 16,
         insets = { left = 4, right = 4, top = 4, bottom = 4 }
     })
@@ -268,6 +467,9 @@ function PL:InitUI()
     self.timerDisplay:SetPoint("TOP", sessionInfoText, "BOTTOM", 0, -5)
     self.timerDisplay:SetText("")
     
+    -- Now create the item drop frame after sessionInfoText is initialized
+    self:CreateItemDropFrame()
+    
     -- Calculate button grid dimensions
     local buttonWidth = 30
     local buttonHeight = 24
@@ -281,11 +483,11 @@ function PL:InitUI()
     -- Calculate total height of button grid
     local totalHeight = (buttonHeight * numRows) + (buttonSpacing * (numRows - 1))
     
-    -- Priority buttons frame (centered horizontally)
+    -- Priority buttons frame with increased spacing
     local priorityFrame = CreateFrame("Frame", nil, self.PriorityLootFrame)
     priorityFrame:SetSize(totalWidth, totalHeight)
-    -- Center it horizontally by anchoring to the center of the window
-    priorityFrame:SetPoint("TOP", self.PriorityLootFrame, "TOP", 0, -140)
+    -- Center it horizontally and position it below the item display with more space
+    priorityFrame:SetPoint("TOP", self.PriorityLootFrame, "TOP", 0, -200)
     
     -- Priority buttons (1-19, arranged in rows of 5)
     for i = 1, 19 do
@@ -354,6 +556,7 @@ function PL:InitUI()
     -- Hide by default
     self.PriorityLootFrame:Hide()
     
+    -- Initialize UI state
     self:UpdateUI()
     
     self.initialized = true
