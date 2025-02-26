@@ -311,7 +311,7 @@ function PL:StartRollSession()
         
         -- Ensure it's within reasonable bounds
         if inputDuration < 5 then inputDuration = 5 end
-        if inputDuration > 300 then inputDuration = 300 end
+        if inputDuration > 60 then inputDuration = 60 end
         
         self.timerDuration = inputDuration
         self:StartTimer(inputDuration)
