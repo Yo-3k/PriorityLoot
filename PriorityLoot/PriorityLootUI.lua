@@ -15,7 +15,7 @@ PL.timerCheckbox = nil
 PL.timerEditBox = nil
 PL.timerDisplay = nil
 PL.clearButton = nil -- Clear button
-PL.queueStatusText = nil -- Added for queue status display
+PL.throttleDisplay = nil -- Message throttle display
 
 -- Item display elements
 PL.itemDropFrame = nil
@@ -91,26 +91,8 @@ function PL:UpdateParticipantsList()
     self.playerListContent:SetHeight(math.max(140, yOffset))
 end
 
--- Update queue status display
-function PL:UpdateQueueStatus()
-    if not self.queueStatusText then return end
-    
-    local totalQueued = 0
-    for prefix, queue in pairs(self.messageQueues) do
-        totalQueued = totalQueued + #queue
-    end
-    
-    if totalQueued > 0 then
-        self.queueStatusText:SetText("Messages in queue: " .. totalQueued)
-        self.queueStatusText:SetTextColor(1, 0.8, 0) -- Yellow when messages are queued
-    else
-        self.queueStatusText:SetText("Message queue: Empty")
-        self.queueStatusText:SetTextColor(0, 1, 0) -- Green when queue is empty
-    end
-end
-
 -- Update UI based on session state
-function PL:UpdateUI(forceQueueUpdate)
+function PL:UpdateUI(forceUpdate)
     if not self.PriorityLootFrame then return end
     
     -- Session state logic
@@ -193,10 +175,11 @@ function PL:UpdateUI(forceQueueUpdate)
     -- Update participants list
     self:UpdateParticipantsList()
     
-    -- Update queue status if requested or every few seconds
-    if forceQueueUpdate or not self.lastQueueUpdate or (GetTime() - self.lastQueueUpdate) >= 2 then
-        self:UpdateQueueStatus()
-        self.lastQueueUpdate = GetTime()
+    -- Update throttle display with retry count
+    if self.retryMessages then
+        self:UpdateThrottleDisplay(#self.retryMessages)
+    else
+        self:UpdateThrottleDisplay(0)
     end
 end
 
@@ -393,7 +376,7 @@ end
 function PL:InitUI()
     -- Main frame
     self.PriorityLootFrame = CreateFrame("Frame", "PriorityLootFrame", UIParent, "BackdropTemplate")
-    self.PriorityLootFrame:SetSize(260, 520) -- Slightly taller to accommodate queue status
+    self.PriorityLootFrame:SetSize(260, 520) -- Slightly taller to accommodate message status
     self.PriorityLootFrame:SetPoint("CENTER")
     self.PriorityLootFrame:SetBackdrop({
         bgFile = "Interface/Tooltips/UI-Tooltip-Background",
@@ -548,15 +531,15 @@ function PL:InitUI()
     yourPriorityText:SetText("Your priority: None")
     self.yourPriorityText = yourPriorityText
     
-    -- Add queue status text to show throttling information
-    self.queueStatusText = self.PriorityLootFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    self.queueStatusText:SetPoint("TOP", yourPriorityText, "BOTTOM", 0, -5)
-    self.queueStatusText:SetText("Message queue: Empty")
-    self.queueStatusText:SetTextColor(0, 1, 0) -- Green text for empty queue
+    -- Add throttle status display
+    self.throttleDisplay = self.PriorityLootFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    self.throttleDisplay:SetPoint("TOP", yourPriorityText, "BOTTOM", 0, -5)
+    self.throttleDisplay:SetText("Message system: Ready")
+    self.throttleDisplay:SetTextColor(0, 1, 0) -- Green by default
     
-    -- Player list frame - moved down to ensure it's below the queue status
+    -- Player list frame - moved down to ensure it's below the priority text
     local listTitleText = self.PriorityLootFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    listTitleText:SetPoint("TOP", self.queueStatusText, "BOTTOM", 0, -5) -- Position relative to queue status
+    listTitleText:SetPoint("TOP", self.throttleDisplay, "BOTTOM", 0, -5) -- Position relative to throttle display
     listTitleText:SetText("Participants")
     
     -- Create a parent frame for the scroll frame to fix the slider position
@@ -593,15 +576,18 @@ function PL:InitUI()
     self.initialized = true
     print("|cff00ff00PriorityLoot v" .. self.version .. " loaded. Type /pl or /priorityloot to open.|r")
     
-    -- Create update timer to refresh the queue status display
-    local queueDisplayFrame = CreateFrame("Frame")
-    queueDisplayFrame:SetScript("OnUpdate", function(self, elapsed)
-        self.timeSinceLastUpdate = (self.timeSinceLastUpdate or 0) + elapsed
-        if self.timeSinceLastUpdate >= 1 then -- Update once per second
-            self.timeSinceLastUpdate = 0
-            if PL.PriorityLootFrame:IsVisible() then
-                PL:UpdateQueueStatus()
-            end
+    -- Initial throttle display update
+    self:UpdateThrottleDisplay(0)
+    
+    -- Create a frame to regularly update the message status
+    local statusUpdateFrame = CreateFrame("Frame")
+    statusUpdateFrame:SetScript("OnUpdate", function(frame, elapsed)
+        frame.elapsed = (frame.elapsed or 0) + elapsed
+        if frame.elapsed < 1 then return end -- Update once per second
+        frame.elapsed = 0
+        
+        if self.PriorityLootFrame:IsVisible() and self.retryMessages then
+            self:UpdateThrottleDisplay(#self.retryMessages)
         end
     end)
 end
