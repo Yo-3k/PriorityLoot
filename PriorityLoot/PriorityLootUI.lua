@@ -22,27 +22,6 @@ PL.itemDisplayFrame = nil
 PL.itemIcon = nil
 PL.itemText = nil
 
--- Button press relief time
-PL.lastPressTime = 0
-
--- UI update throttling variables
-PL.lastUIUpdateTime = 0
-PL.uiUpdateQueued = false
-PL.UI_UPDATE_THROTTLE = 0.1 -- 100ms minimum between updates
-
--- Returns true if button can be pressed again (kept for optional use)
-function PL:ButtonRelief()
-    now = GetTime()
-
-    -- Make sure Button can only be pressed every 0.5s
-    if ((GetTime() - self.lastPressTime) > 0.5) then
-        self.lastPressTime = GetTime()
-        return true
-    else
-        return false
-    end
-end
-
 -- Update the timer display
 function PL:UpdateTimerDisplay(remainingTime)
     if not self.timerDisplay then return end
@@ -111,75 +90,28 @@ function PL:UpdateParticipantsList()
     self.playerListContent:SetHeight(math.max(140, yOffset))
 end
 
--- Update UI based on session state - Improved with throttling and state consistency
-function PL:UpdateUI(force)
-    -- Skip if frame not initialized yet
+-- Update UI based on session state
+function PL:UpdateUI()
     if not self.PriorityLootFrame then return end
     
-    local now = GetTime()
-    
-    -- If we've updated very recently and this isn't a forced update, queue one for later
-    if not force and now - self.lastUIUpdateTime < self.UI_UPDATE_THROTTLE then
-        -- Don't schedule more than one update
-        if not self.uiUpdateQueued then
-            self.uiUpdateQueued = true
-            C_Timer.After(self.UI_UPDATE_THROTTLE, function()
-                self.uiUpdateQueued = false
-                self:UpdateUI(true) -- Force the update when it runs
-            end)
-        end
-        return
-    end
-    
-    -- Record this update time
-    self.lastUIUpdateTime = now
-    
-    -- Take a snapshot of the current state to ensure consistency
-    local stateSnapshot = {
-        sessionActive = self.sessionActive,
-        isHost = self.isHost,
-        timerActive = self.timerActive,
-        playerPriority = self.playerPriority,
-        sessionHost = self.sessionHost
-    }
-    
-    -- Basic button state
+    -- Session state logic
     local canStartRoll = IsInRaid() and self:IsMasterLooter()
     
-    -- Lock UI during state transitions to avoid inconsistency
-    local isStateTransitioning = self.isProcessingRollAction
-    
-    -- Detect and fix inconsistent states early
-    if not stateSnapshot.sessionActive and stateSnapshot.timerActive then
-        -- Inconsistent state detected - force stop timer
-        print("|cffff0000Inconsistent timer state detected and fixed.|r")
-        self.timerActive = false
-        if self.timerFrame then
-            self.timerFrame:SetScript("OnUpdate", nil)
-        end
-        if self.timerDisplay then
-            self.timerDisplay:SetText("")
-        end
-        
-        -- Update snapshot after fixing
-        stateSnapshot.timerActive = false
-    end
-    
-    -- Session state logic - use the snapshot for consistency
-    if stateSnapshot.sessionActive then
+    -- Basic button state
+    if self.sessionActive then
         self.startButton:SetEnabled(false)
         self.timerCheckbox:SetEnabled(false)
         self.timerEditBox:SetEnabled(false)
         
         -- Enable stop button for host only
-        self.stopButton:SetEnabled(stateSnapshot.isHost and not isStateTransitioning)
+        self.stopButton:SetEnabled(self.isHost)
         
         -- Enable priority buttons
         for i = 1, 19 do
-            self.priorityButtons[i]:SetEnabled(not isStateTransitioning)
+            self.priorityButtons[i]:SetEnabled(true)
             
             -- Highlight current selection
-            if stateSnapshot.playerPriority and stateSnapshot.playerPriority == i then
+            if self.playerPriority and self.playerPriority == i then
                 self.priorityButtons[i]:SetNormalFontObject("GameFontHighlight")
                 self.priorityButtons[i]:LockHighlight()
             else
@@ -189,22 +121,22 @@ function PL:UpdateUI(force)
         end
         
         -- Enable clear button
-        self.clearButton:SetEnabled(not isStateTransitioning)
+        self.clearButton:SetEnabled(true)
         
         -- Update priority text
         if self.yourPriorityText then
-            if stateSnapshot.playerPriority then
-                self.yourPriorityText:SetText("Your priority: " .. stateSnapshot.playerPriority)
+            if self.playerPriority then
+                self.yourPriorityText:SetText("Your priority: " .. self.playerPriority)
             else
                 self.yourPriorityText:SetText("Your priority: None")
             end
         end
     else
         -- Not in session
-        self.startButton:SetEnabled(canStartRoll and not isStateTransitioning)
+        self.startButton:SetEnabled(canStartRoll)
         self.stopButton:SetEnabled(false)
-        self.timerCheckbox:SetEnabled(canStartRoll and not isStateTransitioning)
-        self.timerEditBox:SetEnabled(canStartRoll and self.timerCheckbox:GetChecked() and not isStateTransitioning)
+        self.timerCheckbox:SetEnabled(canStartRoll)
+        self.timerEditBox:SetEnabled(canStartRoll and self.timerCheckbox:GetChecked())
         
         -- Disable priority buttons
         for i = 1, 19 do
@@ -216,25 +148,20 @@ function PL:UpdateUI(force)
         -- Disable clear button
         self.clearButton:SetEnabled(false)
         
-        -- Don't reset player's priority here, that should be handled elsewhere
-        -- when the session actually ends
+        -- Reset player's priority display
+        self.playerPriority = nil
         if self.yourPriorityText then
-            if stateSnapshot.playerPriority then
-                self.yourPriorityText:SetText("Your priority: " .. stateSnapshot.playerPriority)
-            else
-                self.yourPriorityText:SetText("Your priority: None")
-            end
+            self.yourPriorityText:SetText("Your priority: None")
         end
     end
     
     -- Session info text
     if self.sessionInfoText then
-        if stateSnapshot.sessionActive then
-            if stateSnapshot.isHost then
+        if self.sessionActive then
+            if self.isHost then
                 self.sessionInfoText:SetText("You started a roll session")
             else
-                local hostName = self:GetDisplayName(stateSnapshot.sessionHost or "Unknown")
-                self.sessionInfoText:SetText("Roll session started by " .. hostName)
+                self.sessionInfoText:SetText("Roll session started by " .. self:GetDisplayName(self.sessionHost))
             end
         else
             self.sessionInfoText:SetText("No active roll session")
@@ -246,19 +173,6 @@ function PL:UpdateUI(force)
     
     -- Update participants list
     self:UpdateParticipantsList()
-    
-    -- DEFENSIVE CHECK: Make sure buttons are disabled if session is inactive
-    if not self.sessionActive then
-        for i = 1, 19 do
-            if self.priorityButtons[i] and self.priorityButtons[i]:IsEnabled() then
-                -- Force disable any buttons that should be disabled
-                self.priorityButtons[i]:SetEnabled(false)
-                self.priorityButtons[i]:SetNormalFontObject("GameFontNormal")
-                self.priorityButtons[i]:UnlockHighlight()
-                print("|cffff0000Fixed inconsistent button state.|r")
-            end
-        end
-    end
 end
 
 -- Check if player is host or is allowed to manage items
@@ -528,23 +442,19 @@ function PL:InitUI()
         editBox:ClearFocus()
     end)
     
-    -- Host controls with button spam protection (removed ButtonRelief as requested)
+    -- Host controls
     self.startButton = CreateFrame("Button", "PriorityLootStartButton", self.PriorityLootFrame, "UIPanelButtonTemplate")
     self.startButton:SetSize(100, 24)
     self.startButton:SetPoint("TOPLEFT", 20, -70)
     self.startButton:SetText("Start Roll")
-    self.startButton:SetScript("OnClick", function() 
-        self:StartRollSession() 
-    end)
+    self.startButton:SetScript("OnClick", function() self:StartRollSession() end)
     
     self.stopButton = CreateFrame("Button", "PriorityLootStopButton", self.PriorityLootFrame, "UIPanelButtonTemplate")
     self.stopButton:SetSize(100, 24)
     self.stopButton:SetPoint("TOPRIGHT", -20, -70)
     self.stopButton:SetText("Stop Roll")
     self.stopButton:SetEnabled(false)
-    self.stopButton:SetScript("OnClick", function() 
-        self:StopRollSession() 
-    end)
+    self.stopButton:SetScript("OnClick", function() self:StopRollSession() end)
     
     -- Current session info
     local sessionInfoText = self.PriorityLootFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -647,38 +557,7 @@ function PL:InitUI()
     self.PriorityLootFrame:Hide()
     
     -- Initialize UI state
-    self:UpdateUI(true)
-    
-    -- Create a consistency check frame
-    self.consistencyCheckFrame = CreateFrame("Frame")
-    self.lastConsistencyCheck = 0
-    self.CONSISTENCY_CHECK_INTERVAL = 0.5 -- Check every 0.5 seconds
-    
-    self.consistencyCheckFrame:SetScript("OnUpdate", function(_, elapsed)
-        self.lastConsistencyCheck = self.lastConsistencyCheck + elapsed
-        if self.lastConsistencyCheck < self.CONSISTENCY_CHECK_INTERVAL then
-            return
-        end
-        self.lastConsistencyCheck = 0
-        
-        -- Check for inconsistent states
-        if not self.sessionActive then
-            -- Ensure all buttons are disabled when session is inactive
-            local needsUpdate = false
-            for i = 1, 19 do
-                if self.priorityButtons[i] and self.priorityButtons[i]:IsEnabled() then
-                    self.priorityButtons[i]:SetEnabled(false)
-                    self.priorityButtons[i]:SetNormalFontObject("GameFontNormal")
-                    self.priorityButtons[i]:UnlockHighlight()
-                    needsUpdate = true
-                end
-            end
-            
-            if needsUpdate then
-                print("|cffff0000Fixed UI inconsistency in periodic check.|r")
-            end
-        end
-    end)
+    self:UpdateUI()
     
     self.initialized = true
     print("|cff00ff00PriorityLoot v" .. self.version .. " loaded. Type /pl or /priorityloot to open.|r")
