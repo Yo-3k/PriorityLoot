@@ -603,7 +603,7 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
                 local remainingTime = tonumber(parts[2])
                 if remainingTime and remainingTime > 0 then
                     -- Start Timer
-                    self:StartTimer()
+                    self:StartTimer(remainingTime)
                 elseif remainingTime == 0 then
                     -- Stop Timer
                     self:StopTimer()
