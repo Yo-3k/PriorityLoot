@@ -692,7 +692,7 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
                         end
                     end
                 end
-            }
+            end
             
         elseif command == self.COMM_STOP then
             -- Session ended with results
