@@ -398,6 +398,16 @@ function PL:InitUI()
     title:SetPoint("TOP", 0, -10)
     title:SetText("Priority Loot")
     
+    -- Prefix Display (Add this to show which prefix this player is using)
+    local prefixText = self.PriorityLootFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    prefixText:SetPoint("TOPRIGHT", -25, -10)
+    if self.myPrefixIndex then
+        local prefixNum = self.myPrefixIndex
+        prefixText:SetText("Prefix: " .. prefixNum)
+    else
+        prefixText:SetText("No prefix")
+    end
+    
     -- Timer checkbox
     self.timerCheckbox = CreateFrame("CheckButton", "PriorityLootTimerCheckbox", self.PriorityLootFrame, "UICheckButtonTemplate")
     self.timerCheckbox:SetPoint("TOPLEFT", 20, -42)

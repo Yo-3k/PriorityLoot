@@ -27,7 +27,7 @@ PL.playerPriority = nil -- Track current player's selected priority
 PL.currentLootItemLink = nil
 PL.currentLootItemTexture = nil
 
--- Communication
+-- Communication constants
 PL.COMM_PREFIX = "PriorityLoot"
 PL.COMM_JOIN = "JOIN"
 PL.COMM_START = "START"
@@ -36,11 +36,14 @@ PL.COMM_TIMER = "TIMER" -- For timer sync
 PL.COMM_LEAVE = "LEAVE" -- For removing player from roll
 PL.COMM_ITEM = "ITEM"   -- For sharing item data
 PL.COMM_CLEAR = "CLEAR" -- For clearing item data
+PL.COMM_PREFIXLIST = "PREFIXLIST" -- For sharing prefix list
 
--- Unique prefix per player solution
-PL.COMM_PREFIX_BASE = "PL_" -- Base prefix that will be combined with a player identifier
+-- For the multi-prefix solution
+PL.prefixFormat = "PL%d" -- Will create PL1, PL2, PL3, etc.
+PL.myPrefixIndex = nil -- This will be assigned during initialization
 PL.registeredPrefixes = {} -- Track which prefixes we've registered
-PL.myPrefix = nil -- Will store this player's unique prefix
+PL.availablePrefixes = {} -- Prefix pool that all raid members will share
+PL.MAX_PREFIXES = 10 -- Maximum number of different prefixes we'll use
 PL.retryMessages = {} -- Simple structure to store messages that need to be retried
 PL.retryInterval = 0.5 -- Retry every 0.5 seconds
 PL.maxRetries = 10 -- Maximum number of retry attempts
@@ -59,29 +62,30 @@ PL.CLASS_COLORS = {
     ["DRUID"] = "FF7D0A"
 }
 
--- Get a unique prefix for a specific player
-function PL:GetUniquePrefix(playerName)
-    if not playerName then return self.COMM_PREFIX end
+-- Initialize the multi-prefix system
+function PL:InitPrefixSystem()
+    -- Create available prefix pool
+    for i = 1, self.MAX_PREFIXES do
+        table.insert(self.availablePrefixes, string.format(self.prefixFormat, i))
+    end
     
-    -- Sanitize player name to ensure it's a valid prefix
-    -- WoW has a limit of 16 characters for prefixes
-    local sanitized = playerName:gsub("[^A-Za-z0-9]", ""):sub(1, 10)
-    return self.COMM_PREFIX_BASE .. sanitized
-end
-
--- Initialize the unique prefix system
-function PL:InitUniquePrefix()
-    -- Get our unique prefix based on player name
-    local playerName = UnitName("player")
-    self.myPrefix = self:GetUniquePrefix(playerName)
-    
-    -- Register our unique prefix
-    C_ChatInfo.RegisterAddonMessagePrefix(self.myPrefix)
-    self.registeredPrefixes[self.myPrefix] = true
-    
-    -- Also register the standard prefix for backwards compatibility
+    -- Register our main prefix (always used for coordination)
     C_ChatInfo.RegisterAddonMessagePrefix(self.COMM_PREFIX)
     self.registeredPrefixes[self.COMM_PREFIX] = true
+    
+    -- Register all available prefixes (this ensures everyone listens to all prefixes)
+    for _, prefix in ipairs(self.availablePrefixes) do
+        C_ChatInfo.RegisterAddonMessagePrefix(prefix)
+        self.registeredPrefixes[prefix] = true
+    end
+    
+    -- Assign our own prefix based on a hash of the player name for consistency
+    local playerName = UnitName("player")
+    local hash = 0
+    for i = 1, #playerName do
+        hash = hash + string.byte(playerName, i)
+    end
+    self.myPrefixIndex = (hash % self.MAX_PREFIXES) + 1
     
     -- Create frame for retry handling
     self.retryFrame = CreateFrame("Frame")
@@ -93,10 +97,12 @@ function PL:InitUniquePrefix()
         -- Process any pending retries
         self:ProcessRetries()
     end)
-    
-    -- Register prefix for receiving additional participant chunks
-    C_ChatInfo.RegisterAddonMessagePrefix(self.COMM_STOP .. "_more")
-    self.registeredPrefixes[self.COMM_STOP .. "_more"] = true
+end
+
+-- Get our assigned prefix 
+function PL:GetMyPrefix()
+    if not self.myPrefixIndex then return self.COMM_PREFIX end
+    return self.availablePrefixes[self.myPrefixIndex]
 end
 
 -- Process message retries
@@ -107,7 +113,7 @@ function PL:ProcessRetries()
     local msg = table.remove(self.retryMessages, 1)
     
     -- Try to send the message
-    local success, errorMsg = pcall(function()
+    local success, result = pcall(function()
         return C_ChatInfo.SendAddonMessage(
             msg.prefix,
             msg.message,
@@ -117,24 +123,38 @@ function PL:ProcessRetries()
     end)
     
     -- Check if there was an error or throttling
-    if not success or errorMsg == Enum.SendAddonMessageResult.AddonMessageThrottle then
+    if not success or result == Enum.SendAddonMessageResult.AddonMessageThrottle then
         -- Increment retry count
         msg.retries = msg.retries + 1
         
         -- If we haven't exceeded max retries, queue for retry
         if msg.retries <= self.maxRetries then
+            -- If it was specifically a throttle issue, try a different prefix
+            if result == Enum.SendAddonMessageResult.AddonMessageThrottle and msg.prefix ~= self.COMM_PREFIX then
+                local nextPrefixIndex = (msg.prefixIndex % self.MAX_PREFIXES) + 1
+                msg.prefix = self.availablePrefixes[nextPrefixIndex]
+                msg.prefixIndex = nextPrefixIndex
+            end
+            
             -- Put back at the end of the retry queue
             table.insert(self.retryMessages, msg)
         else
-            -- Exceeded max retries - this is bad, we're just going to force it
-            -- We don't want to lose messages, so we'll keep trying, but less frequently
-            msg.retries = msg.retries - 5 -- Reset some of the retry count
-            table.insert(self.retryMessages, msg)
-            
-            -- Print a warning since this is unusual
-            if not msg.warningPrinted then
-                print("|cffff0000Warning: Having trouble sending addon messages. If this persists, try reloading UI.|r")
-                msg.warningPrinted = true
+            -- Try again with the main prefix as a fallback
+            if msg.prefix ~= self.COMM_PREFIX then
+                msg.prefix = self.COMM_PREFIX
+                msg.retries = 0
+                table.insert(self.retryMessages, msg)
+            else
+                -- Exceeded max retries - this is bad, we're just going to force it
+                -- We don't want to lose messages, so we'll keep trying, but less frequently
+                msg.retries = msg.retries - 5 -- Reset some of the retry count
+                table.insert(self.retryMessages, msg)
+                
+                -- Print a warning since this is unusual
+                if not msg.warningPrinted then
+                    print("|cffff0000Warning: Having trouble sending addon messages. If this persists, try reloading UI.|r")
+                    msg.warningPrinted = true
+                end
             end
         end
         
@@ -150,10 +170,19 @@ function PL:ProcessRetries()
     end
 end
 
--- Send message with automatic retry if it fails
-function PL:SendMessageWithRetry(prefix, message, distribution, target)
+-- Send message with automatic retry if it fails, using our unique prefix
+function PL:SendMessageWithRetry(message, distribution, target)
+    -- The prefix we'll try initially
+    local prefix = self:GetMyPrefix()
+    local prefixIndex = self.myPrefixIndex
+    
+    -- For coordination messages, always use the main prefix
+    if message:find(self.COMM_PREFIXLIST) == 1 then
+        prefix = self.COMM_PREFIX
+    end
+    
     -- First try to send the message directly
-    local success, errorMsg = pcall(function()
+    local success, result = pcall(function()
         return C_ChatInfo.SendAddonMessage(
             prefix,
             message,
@@ -163,13 +192,14 @@ function PL:SendMessageWithRetry(prefix, message, distribution, target)
     end)
     
     -- If there was a problem, add to retry list
-    if not success or errorMsg == Enum.SendAddonMessageResult.AddonMessageThrottle then
+    if not success or result == Enum.SendAddonMessageResult.AddonMessageThrottle then
         table.insert(self.retryMessages, {
             prefix = prefix,
             message = message,
             distribution = distribution,
             target = target,
             retries = 0,
+            prefixIndex = prefixIndex,
             warningPrinted = false
         })
         
@@ -197,16 +227,6 @@ function PL:UpdateThrottleDisplay(retryCount)
         self.throttleDisplay:SetText("Message system: Ready")
         self.throttleDisplay:SetTextColor(0, 1, 0) -- Green
     end
-end
-
--- Dynamically register prefixes when we encounter new players
-function PL:EnsurePrefixRegistered(playerName)
-    local prefix = self:GetUniquePrefix(playerName)
-    if not self.registeredPrefixes[prefix] then
-        C_ChatInfo.RegisterAddonMessagePrefix(prefix)
-        self.registeredPrefixes[prefix] = true
-    end
-    return prefix
 end
 
 -- Get player's full name with server
@@ -283,9 +303,7 @@ end
 function PL:BroadcastTimerInfo(remainingTime)
     if not self.isHost then return end
     
-    -- Use the host's prefix
     self:SendMessageWithRetry(
-        self.myPrefix,
         self.COMM_TIMER .. ":" .. remainingTime,
         self:GetDistributionChannel()
     )
@@ -354,7 +372,6 @@ function PL:UpdatePlayerPriority(newPriority)
     
     -- Send JOIN message using player's unique prefix
     self:SendMessageWithRetry(
-        self.myPrefix,
         self.COMM_JOIN .. ":" .. self.playerFullName .. "," .. newPriority,
         self:GetDistributionChannel()
     )
@@ -402,9 +419,8 @@ function PL:ClearPlayerRoll()
     -- Reset player's priority
     self.playerPriority = nil
     
-    -- Broadcast leave message using player's unique prefix
+    -- Broadcast leave message
     self:SendMessageWithRetry(
-        self.myPrefix,
         self.COMM_LEAVE .. ":" .. self.playerFullName,
         self:GetDistributionChannel()
     )
@@ -491,7 +507,6 @@ function PL:SetCurrentItem(itemLink)
     -- Broadcast item to other players if you're the host
     if self:IsMasterLooter() then        
         self:SendMessageWithRetry(
-            self.myPrefix,
             self.COMM_ITEM .. ":" .. itemLink,
             self:GetDistributionChannel()
         )
@@ -507,7 +522,6 @@ function PL:ClearCurrentItem()
     if self:IsMasterLooter() and self.currentLootItemLink then
         -- Broadcast clear item command
         self:SendMessageWithRetry(
-            self.myPrefix,
             self.COMM_CLEAR,
             self:GetDistributionChannel()
         )
@@ -546,9 +560,8 @@ function PL:StartRollSession()
     -- Update UI immediately to reflect state change
     self:UpdateUI(true)
     
-    -- Broadcast start message using host's unique prefix
+    -- Broadcast start message
     self:SendMessageWithRetry(
-        self.myPrefix,
         self.COMM_START,
         self:GetDistributionChannel()
     )
@@ -556,7 +569,6 @@ function PL:StartRollSession()
     -- Send item link as a separate message if available
     if self.currentLootItemLink then
         self:SendMessageWithRetry(
-            self.myPrefix,
             self.COMM_ITEM .. ":" .. self.currentLootItemLink,
             self:GetDistributionChannel()
         )
@@ -638,7 +650,6 @@ function PL:StopRollSession()
     end
     
     self:SendMessageWithRetry(
-        self.myPrefix,
         message,
         self:GetDistributionChannel()
     )
@@ -651,7 +662,6 @@ function PL:StopRollSession()
         end
         
         self:SendMessageWithRetry(
-            self.myPrefix,
             additionalMessage,
             self:GetDistributionChannel()
         )
@@ -719,20 +729,19 @@ end
 
 -- Handle addon communication
 function PL:OnCommReceived(prefix, message, distribution, sender)
-    -- Accept messages from our global prefix
-    if prefix == self.COMM_PREFIX then
-        -- Process message
-    -- Accept messages from the sender's unique prefix
-    elseif prefix == self:GetUniquePrefix(self:GetDisplayName(sender)) then
-        -- Process message
-    -- Accept messages from any registered prefix that starts with our base
-    elseif prefix:find(self.COMM_PREFIX_BASE) == 1 then
-        -- Process message
-    -- Accept messages for participant chunks (for results)
-    elseif prefix == (self.COMM_STOP .. "_more") then
-        -- Process additional participant chunk message
-    else
-        -- Not a message for us
+    -- Accept messages from our main prefix
+    local isOurPrefix = (prefix == self.COMM_PREFIX)
+    
+    -- Or from any of our available prefixes
+    for _, availablePrefix in ipairs(self.availablePrefixes) do
+        if prefix == availablePrefix then
+            isOurPrefix = true
+            break
+        end
+    end
+    
+    -- Early return if not our prefix
+    if not isOurPrefix then
         return
     end
     
@@ -885,7 +894,7 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
             self:UpdateUI()
             
         elseif message:find(self.COMM_STOP .. "_more") == 1 then
-            -- Processing additional participant chunks
+            -- Process additional participant chunks from a stop message
             -- Only process if session is already stopped
             if self.sessionActive then return end
             
@@ -947,8 +956,8 @@ end
 -- Initialize the addon
 local function OnEvent(self, event, ...)
     if event == "ADDON_LOADED" and ... == addonName then
-        -- Initialize unique prefix system
-        PL:InitUniquePrefix()
+        -- Initialize prefix system
+        PL:InitPrefixSystem()
         
         -- Get player's full name (with server)
         PL.playerFullName = PL:GetPlayerFullName()
