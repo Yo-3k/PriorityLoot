@@ -17,6 +17,7 @@ PL.playerFullName = nil -- Will store name-server format
 PL.sessionHost = nil
 PL.initialized = false
 PL.timerDuration = 10 -- Default timer duration now 10 seconds
+PL.timerLagCompensation = 0.5 -- 500ms lag compensation for initial timer sync
 PL.timerActive = false
 PL.timerEndTime = 0
 PL.timerFrame = nil
@@ -255,12 +256,6 @@ function PL:StartTimer(duration)
         if not frame.lastUpdate or (GetTime() - frame.lastUpdate) >= 0.1 then
             frame.lastUpdate = GetTime()
             self:UpdateTimerDisplay(remainingTime)
-            
-            -- Broadcast timer info to all raid members every second
-            if self.isHost and (not frame.lastBroadcast or (GetTime() - frame.lastBroadcast) >= 1) then
-                frame.lastBroadcast = GetTime()
-                self:BroadcastTimerInfo(remainingTime)
-            end
         end
     end)
     
@@ -269,13 +264,19 @@ function PL:StartTimer(duration)
     
     -- Initial broadcast
     if self.isHost then
-        self:BroadcastTimerInfo(duration)
+        self:BroadcastTimerInfo(duration - self.timerLagCompensation)
     end
 end
 
 -- Stop the active timer
 function PL:StopTimer()
     self.timerActive = false
+
+    -- Stop timer for others
+    if self.isHost then
+        self:BroadcastTimerInfo(0)
+    end
+
     if self.timerFrame then
         self.timerFrame:SetScript("OnUpdate", nil)
     end
@@ -298,7 +299,7 @@ function PL:SetCurrentItem(itemLink)
     self.currentLootItemTexture = itemTexture
     
     -- Broadcast item to other players if you're the host
-    if self.isHost then        
+    if self:IsMasterLooter() then        
         -- Use a specific message format that won't break item links
         C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, self.COMM_ITEM .. ":" .. itemLink, self:GetDistributionChannel())
     end
@@ -310,7 +311,7 @@ end
 -- Clear the current item and broadcast to all players if host
 function PL:ClearCurrentItem()
     -- Only broadcast if we're the host and there's an item to clear
-    if self.isHost and self.currentLootItemLink then
+    if self:IsMasterLooter() and self.currentLootItemLink then
         -- Broadcast clear item command
         C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, self.COMM_CLEAR, self:GetDistributionChannel())
         print("|cffff9900Item cleared.|r")
@@ -601,21 +602,10 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
             if parts[2] and not self.isHost then
                 local remainingTime = tonumber(parts[2])
                 if remainingTime and remainingTime > 0 then
-                    -- Update the timer display for non-hosts
-                    if not self.timerActive then
-                        -- Start a local timer for display purposes only
-                        self.timerActive = true
-                        
-                        if not self.timerFrame then
-                            self.timerFrame = CreateFrame("Frame")
-                        end
-                        
-                        self.timerFrame:SetScript("OnUpdate", nil)
-                    end
-                    
-                    self:UpdateTimerDisplay(remainingTime)
-                elseif remainingTime and remainingTime <= 0 then
-                    -- Timer ended
+                    -- Start Timer
+                    self:StartTimer()
+                else if remainingTime == 0 then
+                    -- Stop Timer
                     self:StopTimer()
                 end
             end

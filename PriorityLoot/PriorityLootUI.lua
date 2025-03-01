@@ -178,7 +178,7 @@ end
 -- Check if player is host or is allowed to manage items
 function PL:CanManageItems()
     -- Only the host (master looter) can manage items
-    return self.isHost or (not self.sessionActive and self:IsMasterLooter())
+    return not self.sessionActive and self:IsMasterLooter()
 end
 
 -- Handle item display updates separately
