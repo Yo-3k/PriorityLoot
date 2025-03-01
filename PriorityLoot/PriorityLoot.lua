@@ -285,6 +285,9 @@ function PL:StopTimer()
     if self.timerDisplay then
         self.timerDisplay:SetText("")
     end
+    
+    -- Force UI update to ensure consistent state
+    self:UpdateUI(true)
 end
 
 -- Set current item for loot roll
@@ -346,6 +349,9 @@ function PL:StartRollSession()
     self.participants = {}
     self.playerPriority = nil -- Reset player's priority
     
+    -- Update UI immediately to reflect state change
+    self:UpdateUI(true)
+    
     -- Broadcast start message - send item link in a separate message to ensure it's intact
     C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, self.COMM_START, self:GetDistributionChannel())
     
@@ -386,70 +392,75 @@ function PL:StartRollSession()
         print("|cff00ff00Auto-stop timer set for " .. inputDuration .. " seconds.|r")
     end
     
-    -- Update UI
-    self:UpdateUI()
+    -- Final UI update
+    self:UpdateUI(true)
 end
 
 -- Stop the current roll session
 function PL:StopRollSession()
-    if self.isHost and self.sessionActive then
-        self.sessionActive = false
-        
-        -- Stop the timer if active
-        if self.timerActive then
-            self:StopTimer()
-        end
-        
-        -- Broadcast stop message with participant list
-        local message = self.COMM_STOP
-        for i, data in ipairs(self.participants) do
-            message = message .. ":" .. data.name .. "," .. data.priority
-        end
-        
-        C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, message, self:GetDistributionChannel())
-        
-        print("|cffff9900Roll session ended. Results are displayed.|r")
-        
-        -- Sort participants by priority (lower is better)
-        table.sort(self.participants, function(a, b)
-            return a.priority < b.priority
-        end)
-        
-        -- Display raid warning with results
-        if #self.participants > 0 then
-            local resultMessage = ""
-            if self.currentLootItemLink then
-                resultMessage = "Roll results for " .. self.currentLootItemLink .. ": "
-            else
-                resultMessage = "Roll results: "
-            end
-            
-            -- Find all players with the same highest priority
-            local highestPriority = self.participants[1].priority
-            local winners = {}
-            
-            for i, data in ipairs(self.participants) do
-                if data.priority == highestPriority then
-                    table.insert(winners, self:GetDisplayName(data.name) .. " (" .. data.priority .. ")")
-                else
-                    -- Stop once we reach a different priority
-                    break
-                end
-            end
-            
-            -- Add all winners to the message
-            resultMessage = resultMessage .. table.concat(winners, ", ")
-            
-            -- Use consistent channel for announcements
-            local chatChannel = IsInRaid() and "RAID_WARNING" or "PARTY"
-            SendChatMessage(resultMessage, chatChannel)
-        end
-        
-        -- Update UI - *No longer clearing the item when roll finishes*
-        self:UpdateUI()
-    else
+    if not self.isHost or not self.sessionActive then
         print("|cffff0000You're not the host or no session is active.|r")
+        return
     end
+    
+    -- Update the state variables
+    self.sessionActive = false
+    
+    -- Stop the timer if active
+    if self.timerActive then
+        self:StopTimer()
+    end
+    
+    -- Update UI immediately to reflect state change
+    self:UpdateUI(true)
+    
+    -- Broadcast stop message with participant list
+    local message = self.COMM_STOP
+    for i, data in ipairs(self.participants) do
+        message = message .. ":" .. data.name .. "," .. data.priority
+    end
+    
+    C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, message, self:GetDistributionChannel())
+    
+    print("|cffff9900Roll session ended. Results are displayed.|r")
+    
+    -- Sort participants by priority (lower is better)
+    table.sort(self.participants, function(a, b)
+        return a.priority < b.priority
+    end)
+    
+    -- Display raid warning with results
+    if #self.participants > 0 then
+        local resultMessage = ""
+        if self.currentLootItemLink then
+            resultMessage = "Roll results for " .. self.currentLootItemLink .. ": "
+        else
+            resultMessage = "Roll results: "
+        end
+        
+        -- Find all players with the same highest priority
+        local highestPriority = self.participants[1].priority
+        local winners = {}
+        
+        for i, data in ipairs(self.participants) do
+            if data.priority == highestPriority then
+                table.insert(winners, self:GetDisplayName(data.name) .. " (" .. data.priority .. ")")
+            else
+                -- Stop once we reach a different priority
+                break
+            end
+        end
+        
+        -- Add all winners to the message
+        resultMessage = resultMessage .. table.concat(winners, ", ")
+        
+        -- Use consistent channel for announcements
+        local chatChannel = IsInRaid() and "RAID_WARNING" or "PARTY"
+        SendChatMessage(resultMessage, chatChannel)
+    end
+
+    -- Final UI update
+    self:UpdateUI(true)
 end
 
 -- Join a roll with selected priority
@@ -501,7 +512,6 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
         if message:find(self.COMM_START) == 1 then
             -- Someone started a roll session
             self.sessionActive = true
-            self:UpdateUI()
             
             -- Show the window for all players when a session starts
             self.PriorityLootFrame:Show()
@@ -614,7 +624,6 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
         elseif message:find(self.COMM_STOP) == 1 then
             -- Session ended with results
             self.sessionActive = false
-            self:UpdateUI()
 
             -- Stop the timer if active
             if self.timerActive then

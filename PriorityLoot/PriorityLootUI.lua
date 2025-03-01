@@ -25,6 +25,11 @@ PL.itemText = nil
 -- Button press relief time
 PL.lastPressTime = 0
 
+-- UI update throttling variables
+PL.lastUIUpdateTime = 0
+PL.uiUpdateQueued = false
+PL.UI_UPDATE_THROTTLE = 0.1 -- 100ms minimum between updates
+
 -- Returns true if button can be pressed again
 function PL:ButtonRelief()
     now = GetTime()
@@ -106,28 +111,56 @@ function PL:UpdateParticipantsList()
     self.playerListContent:SetHeight(math.max(140, yOffset))
 end
 
--- Update UI based on session state
-function PL:UpdateUI()
+-- Update UI based on session state - Improved with state consistency
+function PL:UpdateUI(force)
+    -- Skip if frame not initialized yet
     if not self.PriorityLootFrame then return end
     
-    -- Session state logic
-    local canStartRoll = IsInRaid() and self:IsMasterLooter()
+    local now = GetTime()
+    
+    -- If we've updated very recently and this isn't a forced update, queue one for later
+    if not force and now - self.lastUIUpdateTime < self.UI_UPDATE_THROTTLE then
+        -- Don't schedule more than one update
+        if not self.uiUpdateQueued then
+            self.uiUpdateQueued = true
+            C_Timer.After(self.UI_UPDATE_THROTTLE, function()
+                self.uiUpdateQueued = false
+                self:UpdateUI(true) -- Force the update when it runs
+            end)
+        end
+        return
+    end
+    
+    -- Record this update time
+    self.lastUIUpdateTime = now
+    
+    -- Take a snapshot of the current state to ensure consistency
+    local stateSnapshot = {
+        sessionActive = self.sessionActive,
+        isHost = self.isHost,
+        timerActive = self.timerActive,
+        playerPriority = self.playerPriority,
+        sessionHost = self.sessionHost
+    }
     
     -- Basic button state
-    if self.sessionActive then
+    local canStartRoll = IsInRaid() and self:IsMasterLooter()
+    
+    -- Session state logic - use the snapshot for consistency
+    if stateSnapshot.sessionActive then
         self.startButton:SetEnabled(false)
         self.timerCheckbox:SetEnabled(false)
         self.timerEditBox:SetEnabled(false)
         
         -- Enable stop button for host only
-        self.stopButton:SetEnabled(self.isHost)
+        self.stopButton:SetEnabled(stateSnapshot.isHost)
         
         -- Enable priority buttons
         for i = 1, 19 do
             self.priorityButtons[i]:SetEnabled(true)
             
             -- Highlight current selection
-            if self.playerPriority and self.playerPriority == i then
+            if stateSnapshot.playerPriority and stateSnapshot.playerPriority == i then
                 self.priorityButtons[i]:SetNormalFontObject("GameFontHighlight")
                 self.priorityButtons[i]:LockHighlight()
             else
@@ -141,8 +174,8 @@ function PL:UpdateUI()
         
         -- Update priority text
         if self.yourPriorityText then
-            if self.playerPriority then
-                self.yourPriorityText:SetText("Your priority: " .. self.playerPriority)
+            if stateSnapshot.playerPriority then
+                self.yourPriorityText:SetText("Your priority: " .. stateSnapshot.playerPriority)
             else
                 self.yourPriorityText:SetText("Your priority: None")
             end
@@ -164,20 +197,24 @@ function PL:UpdateUI()
         -- Disable clear button
         self.clearButton:SetEnabled(false)
         
-        -- Reset player's priority display
-        self.playerPriority = nil
+        -- Don't reset player's priority here, that should be handled elsewhere
+        -- when the session actually ends
         if self.yourPriorityText then
-            self.yourPriorityText:SetText("Your priority: None")
+            if stateSnapshot.playerPriority then
+                self.yourPriorityText:SetText("Your priority: " .. stateSnapshot.playerPriority)
+            else
+                self.yourPriorityText:SetText("Your priority: None")
+            end
         end
     end
     
     -- Session info text
     if self.sessionInfoText then
-        if self.sessionActive then
-            if self.isHost then
+        if stateSnapshot.sessionActive then
+            if stateSnapshot.isHost then
                 self.sessionInfoText:SetText("You started a roll session")
             else
-                self.sessionInfoText:SetText("Roll session started by " .. self:GetDisplayName(self.sessionHost))
+                self.sessionInfoText:SetText("Roll session started by " .. self:GetDisplayName(stateSnapshot.sessionHost))
             end
         else
             self.sessionInfoText:SetText("No active roll session")
