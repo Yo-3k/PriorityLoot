@@ -22,6 +22,22 @@ PL.itemDisplayFrame = nil
 PL.itemIcon = nil
 PL.itemText = nil
 
+-- Button press relief time
+PL.lastPressTime = 0
+
+-- Returns true if button can be pressed again
+function PL:ButtonRelief()
+    now = GetTime()
+
+    -- Make sure Button can only be pressed every 0.5s
+    if ((GetTime() - self.lastPressTime) > 0.5) then
+        self.lastPressTime = GetTime()
+        return true
+    else
+        return false
+    end
+end
+
 -- Update the timer display
 function PL:UpdateTimerDisplay(remainingTime)
     if not self.timerDisplay then return end

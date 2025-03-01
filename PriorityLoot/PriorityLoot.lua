@@ -17,7 +17,7 @@ PL.playerFullName = nil -- Will store name-server format
 PL.sessionHost = nil
 PL.initialized = false
 PL.timerDuration = 10 -- Default timer duration now 10 seconds
-PL.timerLagCompensation = 0.5 -- 500ms lag compensation for initial timer sync
+PL.timerLagCompensation = 0.1 -- 100ms lag compensation for initial timer sync
 PL.timerActive = false
 PL.timerEndTime = 0
 PL.timerFrame = nil
@@ -501,6 +501,7 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
         if message:find(self.COMM_START) == 1 then
             -- Someone started a roll session
             self.sessionActive = true
+            self:UpdateUI()
             
             -- Show the window for all players when a session starts
             self.PriorityLootFrame:Show()
@@ -613,7 +614,8 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
         elseif message:find(self.COMM_STOP) == 1 then
             -- Session ended with results
             self.sessionActive = false
-            
+            self:UpdateUI()
+
             -- Stop the timer if active
             if self.timerActive then
                 self:StopTimer()
