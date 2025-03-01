@@ -604,7 +604,7 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
                 if remainingTime and remainingTime > 0 then
                     -- Start Timer
                     self:StartTimer()
-                else if remainingTime == 0 then
+                elseif remainingTime == 0 then
                     -- Stop Timer
                     self:StopTimer()
                 end
