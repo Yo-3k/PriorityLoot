@@ -37,6 +37,22 @@ PL.COMM_LEAVE = "LEAVE" -- For removing player from roll
 PL.COMM_ITEM = "ITEM"   -- For sharing item data
 PL.COMM_CLEAR = "CLEAR" -- For clearing item data
 
+-- Multiple prefix strategy to increase message throughput
+PL.COMM_PREFIX_HOST = "PLHost"     -- For host-only messages (START, STOP, TIMER, ITEM, CLEAR)
+PL.COMM_PREFIX_PLAYER = "PLPlayer" -- For player messages (JOIN, LEAVE)
+
+-- Message Queueing System
+PL.messageQueues = {}
+PL.throttleInfo = {}
+PL.queueProcessorRunning = false
+
+-- Message Priority Levels
+PL.MSG_PRIORITY = {
+    HIGH = 1,   -- Critical messages like START, STOP
+    MEDIUM = 2, -- Important messages like ITEM, TIMER
+    LOW = 3     -- Regular messages like JOIN, LEAVE
+}
+
 -- Class colors table
 PL.CLASS_COLORS = {
     ["WARRIOR"] = "C79C6E",
@@ -49,6 +65,193 @@ PL.CLASS_COLORS = {
     ["WARLOCK"] = "9482C9",
     ["DRUID"] = "FF7D0A"
 }
+
+-- Initialize the message queuing system
+function PL:InitMessageQueue()
+    -- Set up queues for each prefix
+    self.messageQueues = {
+        [self.COMM_PREFIX] = {},        -- Legacy prefix for backward compatibility
+        [self.COMM_PREFIX_HOST] = {},    -- Host messages queue
+        [self.COMM_PREFIX_PLAYER] = {}   -- Player messages queue
+    }
+    
+    -- Set up throttle info for each prefix
+    self.throttleInfo = {
+        [self.COMM_PREFIX] = {
+            lastSendTime = GetTime(),
+            messageAllowance = 10,
+            maxAllowance = 10
+        },
+        [self.COMM_PREFIX_HOST] = {
+            lastSendTime = GetTime(),
+            messageAllowance = 10,
+            maxAllowance = 10
+        },
+        [self.COMM_PREFIX_PLAYER] = {
+            lastSendTime = GetTime(),
+            messageAllowance = 10,
+            maxAllowance = 10
+        }
+    }
+end
+
+-- Register all communication prefixes
+function PL:RegisterCommPrefixes()
+    C_ChatInfo.RegisterAddonMessagePrefix(self.COMM_PREFIX)        -- Original prefix
+    C_ChatInfo.RegisterAddonMessagePrefix(self.COMM_PREFIX_HOST)   -- Host messages
+    C_ChatInfo.RegisterAddonMessagePrefix(self.COMM_PREFIX_PLAYER) -- Player messages
+end
+
+-- Queue a message for sending
+function PL:QueueMessage(prefix, message, distribution, target, priority)
+    -- Default to LOW priority if not specified
+    priority = priority or self.MSG_PRIORITY.LOW
+    
+    -- Choose appropriate prefix based on message type
+    local usePrefix = prefix
+    if prefix == self.COMM_PREFIX then
+        -- Determine the best prefix to use based on message content
+        if message:find(self.COMM_JOIN) == 1 or message:find(self.COMM_LEAVE) == 1 then
+            usePrefix = self.COMM_PREFIX_PLAYER
+        elseif message:find(self.COMM_START) == 1 or message:find(self.COMM_STOP) == 1 
+               or message:find(self.COMM_TIMER) == 1 or message:find(self.COMM_ITEM) == 1 
+               or message:find(self.COMM_CLEAR) == 1 then
+            usePrefix = self.COMM_PREFIX_HOST
+        end
+    end
+    
+    -- Add message to the appropriate queue
+    table.insert(self.messageQueues[usePrefix], {
+        prefix = usePrefix,
+        message = message,
+        distribution = distribution,
+        target = target,
+        priority = priority,
+        attempts = 0,
+        timeQueued = GetTime()
+    })
+    
+    -- Sort the queue by priority (lower number = higher priority)
+    table.sort(self.messageQueues[usePrefix], function(a, b)
+        if a.priority == b.priority then
+            -- If same priority, send older messages first
+            return a.timeQueued < b.timeQueued
+        end
+        return a.priority < b.priority
+    end)
+    
+    -- Start processing the queues if not already running
+    if not self.queueProcessorRunning then
+        self:ProcessMessageQueues()
+    end
+end
+
+-- Process all message queues
+function PL:ProcessMessageQueues()
+    local anyMessages = false
+    
+    -- Check if any queues have messages
+    for prefix, queue in pairs(self.messageQueues) do
+        if #queue > 0 then
+            anyMessages = true
+            break
+        end
+    end
+    
+    if not anyMessages then
+        self.queueProcessorRunning = false
+        return
+    end
+    
+    self.queueProcessorRunning = true
+    
+    -- Update message allowances based on time passed
+    local currentTime = GetTime()
+    for prefix, info in pairs(self.throttleInfo) do
+        local timePassed = currentTime - info.lastSendTime
+        local messagesRegained = math.floor(timePassed)
+        
+        if messagesRegained > 0 then
+            info.messageAllowance = math.min(
+                info.messageAllowance + messagesRegained,
+                info.maxAllowance
+            )
+            info.lastSendTime = currentTime - (timePassed % 1)
+        end
+    end
+    
+    -- Process one message from each queue if possible
+    local anyProcessed = false
+    for prefix, queue in pairs(self.messageQueues) do
+        if #queue > 0 and self.throttleInfo[prefix].messageAllowance > 0 then
+            local msg = table.remove(queue, 1)
+            
+            local result
+            -- Use pcall to catch any errors
+            local success, err = pcall(function()
+                result = C_ChatInfo.SendAddonMessage(
+                    msg.prefix,
+                    msg.message,
+                    msg.distribution,
+                    msg.target
+                )
+            end)
+            
+            if not success or (result and result == Enum.SendAddonMessageResult.AddonMessageThrottle) then
+                -- If throttled or error, put message back in queue with increased attempt count
+                msg.attempts = msg.attempts + 1
+                
+                -- If too many attempts, consider dropping the message
+                if msg.attempts < 5 then
+                    table.insert(queue, 1, msg) -- Re-insert at top
+                elseif msg.priority <= self.MSG_PRIORITY.MEDIUM then
+                    -- Important messages get more retries
+                    table.insert(queue, 1, msg) -- Re-insert at top
+                else
+                    -- Drop low priority messages after too many attempts
+                    -- Don't add back to queue
+                end
+            else
+                -- Message sent successfully, decrease allowance
+                self.throttleInfo[prefix].messageAllowance = self.throttleInfo[prefix].messageAllowance - 1
+                self.throttleInfo[prefix].lastSendTime = currentTime
+                anyProcessed = true
+            end
+        end
+    end
+    
+    -- Schedule next queue processing
+    local delay = 0.1 -- Process queues every 100ms by default
+    
+    -- If no messages were processed, wait longer
+    if not anyProcessed then
+        delay = 0.5 -- Wait 500ms before trying again
+    end
+    
+    C_Timer.After(delay, function() 
+        self:ProcessMessageQueues() 
+    end)
+end
+
+-- Clean up old messages to prevent queue buildup
+function PL:CleanupMessageQueues()
+    local currentTime = GetTime()
+    local maxAge = 10 -- Messages older than 10 seconds get removed
+    
+    for prefix, queue in pairs(self.messageQueues) do
+        for i = #queue, 1, -1 do
+            local msg = queue[i]
+            if currentTime - msg.timeQueued > maxAge and msg.priority == self.MSG_PRIORITY.LOW then
+                table.remove(queue, i)
+            end
+        end
+    end
+    
+    -- Schedule next cleanup
+    C_Timer.After(5, function() 
+        self:CleanupMessageQueues() 
+    end)
+end
 
 -- Get player's full name with server
 function PL:GetPlayerFullName()
@@ -124,7 +327,13 @@ end
 function PL:BroadcastTimerInfo(remainingTime)
     if not self.isHost then return end
     
-    C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, self.COMM_TIMER .. ":" .. remainingTime, self:GetDistributionChannel())
+    self:QueueMessage(
+        self.COMM_PREFIX, 
+        self.COMM_TIMER .. ":" .. remainingTime, 
+        self:GetDistributionChannel(),
+        nil,
+        self.MSG_PRIORITY.MEDIUM -- Timer info is medium priority
+    )
 end
 
 -- Get class color for a player
@@ -170,7 +379,7 @@ end
 
 -- Update player's priority in the participants list
 function PL:UpdatePlayerPriority(newPriority)
-    -- Store player's priority locally
+    -- Store player's priority locally - immediate local update
     self.playerPriority = newPriority
     
     -- Find and update player in participants list
@@ -188,11 +397,45 @@ function PL:UpdatePlayerPriority(newPriority)
         table.insert(self.participants, {name = self.playerFullName, priority = newPriority})
     end
     
-    -- Broadcast join message with updated priority
-    C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, self.COMM_JOIN .. ":" .. self.playerFullName .. "," .. newPriority, self:GetDistributionChannel())
+    -- Add small random delay to spread out initial JOIN messages
+    -- Only apply during active sessions and for join messages
+    local delayTime = 0
+    if self.sessionActive then
+        -- Random delay between 0-500ms to stagger raid member responses
+        delayTime = math.random(0, 5) / 10
+    end
     
-    -- Update UI
+    C_Timer.After(delayTime, function()
+        -- Queue join message with updated priority
+        self:QueueMessage(
+            self.COMM_PREFIX, 
+            self.COMM_JOIN .. ":" .. self.playerFullName .. "," .. newPriority, 
+            self:GetDistributionChannel(),
+            nil,
+            self.MSG_PRIORITY.LOW -- Join messages are low priority
+        )
+    end)
+    
+    -- Update UI immediately (don't wait for network confirmation)
     self:UpdateUI()
+    
+    -- Highlight the selected button
+    for i = 1, 19 do
+        if i == newPriority then
+            self.priorityButtons[i]:SetNormalFontObject("GameFontHighlight")
+            self.priorityButtons[i]:LockHighlight()
+        else
+            self.priorityButtons[i]:SetNormalFontObject("GameFontNormal")
+            self.priorityButtons[i]:UnlockHighlight()
+        end
+    end
+    
+    -- Print message based on whether this is a change or initial join
+    if self:HasPlayerJoined(self.playerFullName) then
+        print("|cff00ff00You changed your priority to " .. newPriority .. ".|r")
+    else
+        print("|cff00ff00You joined the roll with priority " .. newPriority .. ".|r")
+    end
 end
 
 -- Clear player from the current roll
@@ -216,8 +459,14 @@ function PL:ClearPlayerRoll()
     -- Reset player's priority
     self.playerPriority = nil
     
-    -- Broadcast removal to all raid members
-    C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, self.COMM_LEAVE .. ":" .. self.playerFullName, self:GetDistributionChannel())
+    -- Queue leave message
+    self:QueueMessage(
+        self.COMM_PREFIX, 
+        self.COMM_LEAVE .. ":" .. self.playerFullName, 
+        self:GetDistributionChannel(),
+        nil,
+        self.MSG_PRIORITY.LOW -- Leave messages are low priority
+    )
     
     print("|cffff9900You have removed yourself from the roll.|r")
     
@@ -298,10 +547,16 @@ function PL:SetCurrentItem(itemLink)
     local _, _, _, _, _, _, _, _, _, itemTexture = GetItemInfo(itemLink)
     self.currentLootItemTexture = itemTexture
     
-    -- Broadcast item to other players if you're the host
+    -- Queue item message if you're the host
     if self:IsMasterLooter() then        
         -- Use a specific message format that won't break item links
-        C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, self.COMM_ITEM .. ":" .. itemLink, self:GetDistributionChannel())
+        self:QueueMessage(
+            self.COMM_PREFIX, 
+            self.COMM_ITEM .. ":" .. itemLink, 
+            self:GetDistributionChannel(),
+            nil,
+            self.MSG_PRIORITY.MEDIUM -- Item info is medium priority
+        )
     end
     
     -- Update UI
@@ -312,8 +567,14 @@ end
 function PL:ClearCurrentItem()
     -- Only broadcast if we're the host and there's an item to clear
     if self:IsMasterLooter() and self.currentLootItemLink then
-        -- Broadcast clear item command
-        C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, self.COMM_CLEAR, self:GetDistributionChannel())
+        -- Queue clear item command
+        self:QueueMessage(
+            self.COMM_PREFIX, 
+            self.COMM_CLEAR, 
+            self:GetDistributionChannel(),
+            nil,
+            self.MSG_PRIORITY.MEDIUM -- Clear item is medium priority
+        )
         print("|cffff9900Item cleared.|r")
     end
     
@@ -349,13 +610,25 @@ function PL:StartRollSession()
     -- Update UI immediately to reflect state change
     self:UpdateUI(true)
     
-    -- Broadcast start message - send item link in a separate message to ensure it's intact
-    C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, self.COMM_START, self:GetDistributionChannel())
+    -- Queue start message - HIGH priority
+    self:QueueMessage(
+        self.COMM_PREFIX, 
+        self.COMM_START, 
+        self:GetDistributionChannel(),
+        nil,
+        self.MSG_PRIORITY.HIGH -- Start session is high priority
+    )
     
     -- Send item link as a separate message if available
     if self.currentLootItemLink then
-        -- Share item again just to be sure
-        C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, self.COMM_ITEM .. ":" .. self.currentLootItemLink, self:GetDistributionChannel())
+        -- Share item with medium priority
+        self:QueueMessage(
+            self.COMM_PREFIX, 
+            self.COMM_ITEM .. ":" .. self.currentLootItemLink, 
+            self:GetDistributionChannel(),
+            nil,
+            self.MSG_PRIORITY.MEDIUM -- Item info is medium priority
+        )
         
         -- Show raid warning with item
         local message = "Roll started for " .. self.currentLootItemLink
@@ -411,13 +684,54 @@ function PL:StopRollSession()
     -- Update UI immediately to reflect state change
     self:UpdateUI(true)
     
-    -- Broadcast stop message with participant list
-    local message = self.COMM_STOP
+    -- Batch participants into smaller chunks to avoid huge messages
+    -- Use multiple smaller messages for better delivery reliability
+    local participantChunks = {}
+    local chunkSize = 5 -- Process 5 participants per message
+    local currentChunk = {}
+    
     for i, data in ipairs(self.participants) do
-        message = message .. ":" .. data.name .. "," .. data.priority
+        table.insert(currentChunk, data.name .. "," .. data.priority)
+        
+        if #currentChunk >= chunkSize or i == #self.participants then
+            table.insert(participantChunks, currentChunk)
+            currentChunk = {}
+        end
     end
     
-    C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, message, self:GetDistributionChannel())
+    -- Send stop message with first chunk of participants
+    local firstMessage = self.COMM_STOP
+    if participantChunks[1] then
+        for _, participant in ipairs(participantChunks[1]) do
+            firstMessage = firstMessage .. ":" .. participant
+        end
+    end
+    
+    -- Queue the first stop message - high priority
+    self:QueueMessage(
+        self.COMM_PREFIX, 
+        firstMessage, 
+        self:GetDistributionChannel(),
+        nil,
+        self.MSG_PRIORITY.HIGH -- Stop session is high priority
+    )
+    
+    -- Send remaining participant chunks as additional messages
+    for i = 2, #participantChunks do
+        local additionalMessage = self.COMM_STOP .. "_more"
+        for _, participant in ipairs(participantChunks[i]) do
+            additionalMessage = additionalMessage .. ":" .. participant
+        end
+        
+        -- Queue additional participant messages - high priority
+        self:QueueMessage(
+            self.COMM_PREFIX, 
+            additionalMessage, 
+            self:GetDistributionChannel(),
+            nil,
+            self.MSG_PRIORITY.HIGH
+        )
+    end
     
     print("|cffff9900Roll session ended. Results are displayed.|r")
     
@@ -466,24 +780,6 @@ function PL:JoinRoll(priority)
     
     -- Update player's priority (whether joining fresh or changing)
     self:UpdatePlayerPriority(priority)
-    
-    -- Highlight the selected button
-    for i = 1, 19 do
-        if i == priority then
-            self.priorityButtons[i]:SetNormalFontObject("GameFontHighlight")
-            self.priorityButtons[i]:LockHighlight()
-        else
-            self.priorityButtons[i]:SetNormalFontObject("GameFontNormal")
-            self.priorityButtons[i]:UnlockHighlight()
-        end
-    end
-    
-    -- Print message based on whether this is a change or initial join
-    if self:HasPlayerJoined(self.playerFullName) then
-        print("|cff00ff00You changed your priority to " .. priority .. ".|r")
-    else
-        print("|cff00ff00You joined the roll with priority " .. priority .. ".|r")
-    end
 end
 
 -- Check if player has already joined
@@ -499,7 +795,12 @@ end
 
 -- Handle addon communication
 function PL:OnCommReceived(prefix, message, distribution, sender)
-    if prefix ~= self.COMM_PREFIX then return end
+    -- Accept messages from any of our prefixes
+    if prefix ~= self.COMM_PREFIX and 
+       prefix ~= self.COMM_PREFIX_HOST and 
+       prefix ~= self.COMM_PREFIX_PLAYER then
+        return
+    end
     
     -- Normalize the sender name for consistent comparison
     local normalizedSender = self:NormalizeName(sender)
@@ -648,6 +949,44 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
             -- The item remains displayed until cleared manually or a new roll starts
             
             self:UpdateUI()
+        elseif message:find(self.COMM_STOP .. "_more") == 1 then
+            -- Process additional participant chunks from a stop message
+            -- This handles the case where the participant list is split across multiple messages
+            
+            -- Only process if session is already stopped (from initial STOP message)
+            if self.sessionActive then return end
+            
+            -- Parse participant list from this chunk
+            local parts = {strsplit(":", message)}
+            for i = 2, #parts do
+                local namePriority = {strsplit(",", parts[i])}
+                if namePriority[1] and namePriority[2] then
+                    -- Add to existing participants list
+                    local found = false
+                    for j, existing in ipairs(self.participants) do
+                        if self:NormalizeName(existing.name) == self:NormalizeName(namePriority[1]) then
+                            found = true
+                            break
+                        end
+                    end
+                    
+                    -- Only add if not already in the list
+                    if not found then
+                        table.insert(self.participants, {
+                            name = namePriority[1],
+                            priority = tonumber(namePriority[2])
+                        })
+                    end
+                end
+            end
+            
+            -- Resort the list with new entries
+            table.sort(self.participants, function(a, b)
+                return a.priority < b.priority
+            end)
+            
+            -- Update UI to reflect changes
+            self:UpdateUI()
         end
     end
 end
@@ -675,14 +1014,20 @@ end
 -- Initialize the addon
 local function OnEvent(self, event, ...)
     if event == "ADDON_LOADED" and ... == addonName then
-        -- Register comm prefix
-        C_ChatInfo.RegisterAddonMessagePrefix(PL.COMM_PREFIX)
+        -- Register comm prefixes
+        PL:RegisterCommPrefixes()
+        
+        -- Initialize message queue system
+        PL:InitMessageQueue()
         
         -- Get player's full name (with server)
         PL.playerFullName = PL:GetPlayerFullName()
         
         -- Load UI module
         PL:InitUI()
+        
+        -- Start the queue cleanup timer
+        PL:CleanupMessageQueues()
     elseif event == "PLAYER_ENTERING_WORLD" then
         -- Get player's full name (with server) when entering world
         PL.playerFullName = PL:GetPlayerFullName()
