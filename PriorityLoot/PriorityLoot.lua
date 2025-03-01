@@ -539,6 +539,17 @@ function PL:HasPlayerJoined(name)
     return false
 end
 
+-- Add a function to directly force all buttons to be disabled
+function PL:ForceDisableAllButtons()
+    for i = 1, 19 do
+        if self.priorityButtons[i] then
+            self.priorityButtons[i]:SetEnabled(false)
+            self.priorityButtons[i]:SetNormalFontObject("GameFontNormal")
+            self.priorityButtons[i]:UnlockHighlight()
+        end
+    end
+end
+
 -- Handle addon communication
 function PL:OnCommReceived(prefix, message, distribution, sender)
     if prefix ~= self.COMM_PREFIX then return end
@@ -585,8 +596,6 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
             self.participants = {}
             self.playerPriority = nil -- Reset player's priority
             
-            -- Don't try to parse item from START message
-            -- Item will come in a separate ITEM message
             print("|cff00ff00" .. self:GetDisplayName(sender) .. " started a roll session.|r")
             
             -- Force UI update for consistency
@@ -596,7 +605,6 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
             -- Show the window for all players when an item is selected
             self.PriorityLootFrame:Show()
 
-            -- Item info from host
             -- Extract the item link portion after the COMM_ITEM: prefix
             local itemLink = message:sub(#(self.COMM_ITEM .. ":") + 1)
             
@@ -678,7 +686,7 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
                     -- Start Timer
                     self:StartTimer(remainingTime)
                 elseif remainingTime == 0 then
-                    -- Stop Timer - also check for stop flag
+                    -- Stop Timer
                     self:StopTimer()
                     
                     -- If this is a stop message with session end flag
@@ -695,15 +703,24 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
             end
             
         elseif command == self.COMM_STOP then
-            -- Session ended with results
+            -- Capture the state before making changes (for debugging)
+            local prevState = self.sessionActive
             
-            -- Force kill any active timer first
+            -- CRITICAL: Set session state FIRST before anything else
+            self.sessionActive = false
+            
+            -- Stop any active timer
             if self.timerActive then
                 self:StopTimer()
             end
             
-            self.sessionActive = false
-
+            -- Add debug message to track if the session state change happens
+            if prevState ~= self.sessionActive then
+                print("|cffff9900Debug: Session state changed from active to inactive|r")
+            else
+                print("|cffff9900Debug: Session was already inactive when stop received|r")
+            end
+            
             -- Parse participant list with priorities
             self.participants = {}
             for i = 3, #parts do -- Start from 3 since parts[1]=command, parts[2]=sequence
@@ -716,14 +733,9 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
                 end
             end
             
-            -- Reset all UI elements explicitly to ensure consistency
-            for i = 1, 19 do
-                if self.priorityButtons[i] then
-                    self.priorityButtons[i]:SetEnabled(false)
-                    self.priorityButtons[i]:SetNormalFontObject("GameFontNormal")
-                    self.priorityButtons[i]:UnlockHighlight()
-                end
-            end
+            -- IMPORTANT: Directly modify UI elements to ensure buttons are disabled
+            -- This bypasses the UpdateUI mechanism which might be failing
+            self:ForceDisableAllButtons()
             
             -- Sort participants by priority (lower is better)
             table.sort(self.participants, function(a, b)
@@ -732,13 +744,50 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
             
             print("|cffff9900Roll session ended by " .. self:GetDisplayName(sender) .. ". Results are displayed.|r")
             
-            -- Important: We no longer clear the item on roll end
-            -- The item remains displayed until cleared manually or a new roll starts
-            
-            -- Force UI update to ensure consistency
+            -- Force update the UI multiple times with slight delays to ensure it catches
             self:UpdateUI(true)
+            
+            -- Schedule additional UI updates to catch any missed state changes
+            C_Timer.After(0.1, function() self:UpdateUI(true) end)
+            C_Timer.After(0.3, function() self:UpdateUI(true) end)
+            
+            -- Debug: verify session state is still inactive after processing
+            C_Timer.After(0.5, function()
+                if not self.sessionActive and self.priorityButtons[1] and self.priorityButtons[1]:IsEnabled() then
+                    print("|cffff0000Debug ERROR: Buttons still enabled despite session inactive!|r")
+                    
+                    -- Emergency force-disable of buttons
+                    self:ForceDisableAllButtons()
+                end
+            end)
         end
     end
+end
+
+-- Add a complete state reset function and slash command
+function PL:ResetAllState()
+    -- Reset state variables
+    self.sessionActive = false
+    self.timerActive = false
+    self.timerEndTime = 0
+    
+    -- Kill any active timer
+    if self.timerFrame then
+        self.timerFrame:SetScript("OnUpdate", nil)
+    end
+    
+    -- Clear timer display
+    if self.timerDisplay then
+        self.timerDisplay:SetText("")
+    end
+    
+    -- Reset UI elements
+    self:ForceDisableAllButtons()
+    
+    -- Force update UI
+    self:UpdateUI(true)
+    
+    print("|cffff0000PriorityLoot state has been completely reset.|r")
 end
 
 -- Define slash command handler
@@ -788,6 +837,10 @@ end
 SLASH_PRIORITYLOOT1 = "/priorityloot"
 SLASH_PRIORITYLOOT2 = "/pl"
 SlashCmdList["PRIORITYLOOT"] = function(msg) PL:SlashCommandHandler(msg) end
+
+-- Add emergency reset command
+SLASH_PLRESET1 = "/plreset"
+SlashCmdList["PLRESET"] = function() PL:ResetAllState() end
 
 -- Create and register events frame
 local eventFrame = CreateFrame("Frame")

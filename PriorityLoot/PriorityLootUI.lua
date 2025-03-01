@@ -149,6 +149,22 @@ function PL:UpdateUI(force)
     -- Lock UI during state transitions to avoid inconsistency
     local isStateTransitioning = self.isProcessingRollAction
     
+    -- Detect and fix inconsistent states early
+    if not stateSnapshot.sessionActive and stateSnapshot.timerActive then
+        -- Inconsistent state detected - force stop timer
+        print("|cffff0000Inconsistent timer state detected and fixed.|r")
+        self.timerActive = false
+        if self.timerFrame then
+            self.timerFrame:SetScript("OnUpdate", nil)
+        end
+        if self.timerDisplay then
+            self.timerDisplay:SetText("")
+        end
+        
+        -- Update snapshot after fixing
+        stateSnapshot.timerActive = false
+    end
+    
     -- Session state logic - use the snapshot for consistency
     if stateSnapshot.sessionActive then
         self.startButton:SetEnabled(false)
@@ -230,6 +246,19 @@ function PL:UpdateUI(force)
     
     -- Update participants list
     self:UpdateParticipantsList()
+    
+    -- DEFENSIVE CHECK: Make sure buttons are disabled if session is inactive
+    if not self.sessionActive then
+        for i = 1, 19 do
+            if self.priorityButtons[i] and self.priorityButtons[i]:IsEnabled() then
+                -- Force disable any buttons that should be disabled
+                self.priorityButtons[i]:SetEnabled(false)
+                self.priorityButtons[i]:SetNormalFontObject("GameFontNormal")
+                self.priorityButtons[i]:UnlockHighlight()
+                print("|cffff0000Fixed inconsistent button state.|r")
+            end
+        end
+    end
 end
 
 -- Check if player is host or is allowed to manage items
@@ -499,7 +528,7 @@ function PL:InitUI()
         editBox:ClearFocus()
     end)
     
-    -- Host controls
+    -- Host controls with button spam protection (removed ButtonRelief as requested)
     self.startButton = CreateFrame("Button", "PriorityLootStartButton", self.PriorityLootFrame, "UIPanelButtonTemplate")
     self.startButton:SetSize(100, 24)
     self.startButton:SetPoint("TOPLEFT", 20, -70)
@@ -619,6 +648,37 @@ function PL:InitUI()
     
     -- Initialize UI state
     self:UpdateUI(true)
+    
+    -- Create a consistency check frame
+    self.consistencyCheckFrame = CreateFrame("Frame")
+    self.lastConsistencyCheck = 0
+    self.CONSISTENCY_CHECK_INTERVAL = 0.5 -- Check every 0.5 seconds
+    
+    self.consistencyCheckFrame:SetScript("OnUpdate", function(_, elapsed)
+        self.lastConsistencyCheck = self.lastConsistencyCheck + elapsed
+        if self.lastConsistencyCheck < self.CONSISTENCY_CHECK_INTERVAL then
+            return
+        end
+        self.lastConsistencyCheck = 0
+        
+        -- Check for inconsistent states
+        if not self.sessionActive then
+            -- Ensure all buttons are disabled when session is inactive
+            local needsUpdate = false
+            for i = 1, 19 do
+                if self.priorityButtons[i] and self.priorityButtons[i]:IsEnabled() then
+                    self.priorityButtons[i]:SetEnabled(false)
+                    self.priorityButtons[i]:SetNormalFontObject("GameFontNormal")
+                    self.priorityButtons[i]:UnlockHighlight()
+                    needsUpdate = true
+                end
+            end
+            
+            if needsUpdate then
+                print("|cffff0000Fixed UI inconsistency in periodic check.|r")
+            end
+        end
+    end)
     
     self.initialized = true
     print("|cff00ff00PriorityLoot v" .. self.version .. " loaded. Type /pl or /priorityloot to open.|r")
