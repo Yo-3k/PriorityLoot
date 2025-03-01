@@ -22,6 +22,11 @@ PL.timerActive = false
 PL.timerEndTime = 0
 PL.timerFrame = nil
 PL.playerPriority = nil -- Track current player's selected priority
+PL.isProcessingRollAction = false -- Added to prevent concurrent state changes
+
+-- Message sequence tracking for reliable ordering
+PL.messageSequence = 0
+PL.lastReceivedSequence = {}
 
 -- Item tracking variables
 PL.currentLootItemLink = nil
@@ -124,7 +129,14 @@ end
 function PL:BroadcastTimerInfo(remainingTime)
     if not self.isHost then return end
     
-    C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, self.COMM_TIMER .. ":" .. remainingTime, self:GetDistributionChannel())
+    -- Include the session status in timer messages for reliability
+    local message = self.COMM_TIMER .. ":" .. remainingTime
+    if remainingTime == 0 then
+        -- Force communication that session is inactive for timer sync
+        message = message .. ":stop"
+    end
+    
+    C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, message, self:GetDistributionChannel())
 end
 
 -- Get class color for a player
@@ -192,7 +204,7 @@ function PL:UpdatePlayerPriority(newPriority)
     C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, self.COMM_JOIN .. ":" .. self.playerFullName .. "," .. newPriority, self:GetDistributionChannel())
     
     -- Update UI
-    self:UpdateUI()
+    self:UpdateUI(true)
 end
 
 -- Clear player from the current roll
@@ -222,7 +234,7 @@ function PL:ClearPlayerRoll()
     print("|cffff9900You have removed yourself from the roll.|r")
     
     -- Update UI
-    self:UpdateUI()
+    self:UpdateUI(true)
 end
 
 -- Start timer for automatic roll stop
@@ -266,10 +278,15 @@ function PL:StartTimer(duration)
     if self.isHost then
         self:BroadcastTimerInfo(duration - self.timerLagCompensation)
     end
+    
+    -- Force UI update
+    self:UpdateUI(true)
 end
 
 -- Stop the active timer
 function PL:StopTimer()
+    if not self.timerActive then return end
+    
     self.timerActive = false
 
     -- Stop timer for others
@@ -308,7 +325,7 @@ function PL:SetCurrentItem(itemLink)
     end
     
     -- Update UI
-    self:UpdateUI()
+    self:UpdateUI(true)
 end
 
 -- Clear the current item and broadcast to all players if host
@@ -325,7 +342,7 @@ function PL:ClearCurrentItem()
     self.currentLootItemTexture = nil
     
     -- Update UI
-    self:UpdateUI()
+    self:UpdateUI(true)
 end
 
 -- Start a roll session
@@ -342,6 +359,14 @@ function PL:StartRollSession()
         return
     end
     
+    -- Prevent running if already processing an action
+    if self.isProcessingRollAction then return end
+    self.isProcessingRollAction = true
+    
+    -- Increment sequence for this operation
+    self.messageSequence = self.messageSequence + 1
+    local currentSequence = self.messageSequence
+    
     -- Set host status - critical for the Stop button to work
     self.isHost = true
     self.sessionActive = true
@@ -352,8 +377,8 @@ function PL:StartRollSession()
     -- Update UI immediately to reflect state change
     self:UpdateUI(true)
     
-    -- Broadcast start message - send item link in a separate message to ensure it's intact
-    C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, self.COMM_START, self:GetDistributionChannel())
+    -- Broadcast start message with sequence number
+    C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, self.COMM_START .. ":" .. currentSequence, self:GetDistributionChannel())
     
     -- Send item link as a separate message if available
     if self.currentLootItemLink then
@@ -392,6 +417,9 @@ function PL:StartRollSession()
         print("|cff00ff00Auto-stop timer set for " .. inputDuration .. " seconds.|r")
     end
     
+    -- Allow processing new actions
+    self.isProcessingRollAction = false
+    
     -- Final UI update
     self:UpdateUI(true)
 end
@@ -403,19 +431,27 @@ function PL:StopRollSession()
         return
     end
     
-    -- Update the state variables
-    self.sessionActive = false
+    -- Prevent running if already processing an action
+    if self.isProcessingRollAction then return end
+    self.isProcessingRollAction = true
     
-    -- Stop the timer if active
+    -- Increment sequence for this operation
+    self.messageSequence = self.messageSequence + 1
+    local currentSequence = self.messageSequence
+    
+    -- Stop any active timer FIRST to prevent race conditions
     if self.timerActive then
         self:StopTimer()
     end
     
+    -- Update the state variables
+    self.sessionActive = false
+    
     -- Update UI immediately to reflect state change
     self:UpdateUI(true)
     
-    -- Broadcast stop message with participant list
-    local message = self.COMM_STOP
+    -- Broadcast stop message with sequence number and participant list
+    local message = self.COMM_STOP .. ":" .. currentSequence
     for i, data in ipairs(self.participants) do
         message = message .. ":" .. data.name .. "," .. data.priority
     end
@@ -458,7 +494,10 @@ function PL:StopRollSession()
         local chatChannel = IsInRaid() and "RAID_WARNING" or "PARTY"
         SendChatMessage(resultMessage, chatChannel)
     end
-
+    
+    -- Allow processing new actions
+    self.isProcessingRollAction = false
+    
     -- Final UI update
     self:UpdateUI(true)
 end
@@ -508,8 +547,33 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
     local normalizedSender = self:NormalizeName(sender)
     local normalizedPlayer = self:NormalizeName(self.playerFullName)
     
-    if  normalizedPlayer ~= normalizedSender then
-        if message:find(self.COMM_START) == 1 then
+    if normalizedPlayer ~= normalizedSender then
+        -- Parse the message to get command and possibly sequence
+        local parts = {strsplit(":", message)}
+        local command = parts[1]
+        
+        -- Special handling for commands that use sequence numbers
+        if command == self.COMM_START or command == self.COMM_STOP then
+            local sequence = tonumber(parts[2])
+            if sequence then
+                -- Initialize sequence tracker for this sender if needed
+                if not self.lastReceivedSequence[normalizedSender] then
+                    self.lastReceivedSequence[normalizedSender] = 0
+                end
+                
+                -- Check if this message is newer than the last one from this sender
+                if sequence <= self.lastReceivedSequence[normalizedSender] then
+                    -- This is an old or duplicate message, ignore it
+                    return
+                end
+                
+                -- Update the sequence number for this sender
+                self.lastReceivedSequence[normalizedSender] = sequence
+            end
+        end
+        
+        -- Process the message based on its type
+        if command == self.COMM_START then
             -- Someone started a roll session
             self.sessionActive = true
             
@@ -525,9 +589,10 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
             -- Item will come in a separate ITEM message
             print("|cff00ff00" .. self:GetDisplayName(sender) .. " started a roll session.|r")
             
-            self:UpdateUI()
+            -- Force UI update for consistency
+            self:UpdateUI(true)
 
-        elseif message:find(self.COMM_ITEM) == 1 then
+        elseif command == self.COMM_ITEM then
             -- Show the window for all players when an item is selected
             self.PriorityLootFrame:Show()
 
@@ -550,11 +615,10 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
             self.currentLootItemTexture = nil
             
             -- Update UI
-            self:UpdateUI()
+            self:UpdateUI(true)
             
-        elseif message:find(self.COMM_JOIN) == 1 then
+        elseif command == self.COMM_JOIN then
             -- Someone joined the roll or changed their priority
-            local parts = {strsplit(":", message)}
             if parts[2] then
                 local namePriority = {strsplit(",", parts[2])}
                 if namePriority[1] and namePriority[2] then
@@ -585,13 +649,12 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
                         print("|cff00ff00" .. self:GetDisplayName(name) .. " changed priority.|r")
                     end
                     
-                    self:UpdateUI()
+                    self:UpdateUI(true)
                 end
             end
             
-        elseif message:find(self.COMM_LEAVE) == 1 then
+        elseif command == self.COMM_LEAVE then
             -- Someone left the roll
-            local parts = {strsplit(":", message)}
             if parts[2] then
                 local leavingPlayer = parts[2]
                 
@@ -604,42 +667,61 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
                     end
                 end
                 
-                self:UpdateUI()
+                self:UpdateUI(true)
             end
             
-        elseif message:find(self.COMM_TIMER) == 1 then
+        elseif command == self.COMM_TIMER then
             -- Timer sync from host
-            local parts = {strsplit(":", message)}
             if parts[2] and not self.isHost then
                 local remainingTime = tonumber(parts[2])
                 if remainingTime and remainingTime > 0 then
                     -- Start Timer
                     self:StartTimer(remainingTime)
                 elseif remainingTime == 0 then
-                    -- Stop Timer
+                    -- Stop Timer - also check for stop flag
                     self:StopTimer()
+                    
+                    -- If this is a stop message with session end flag
+                    if parts[3] and parts[3] == "stop" then
+                        -- Force ensure UI state is consistent with stopped session
+                        if self.sessionActive then
+                            -- Safety check only - session should be stopped by STOP message
+                            print("|cffff9900Timer ended but no roll stop message received. Forcing UI update.|r")
+                            -- Don't change session status here since that should come from STOP, just update UI
+                            self:UpdateUI(true)
+                        end
+                    end
                 end
-            end
+            }
             
-        elseif message:find(self.COMM_STOP) == 1 then
+        elseif command == self.COMM_STOP then
             -- Session ended with results
-            self.sessionActive = false
-
-            -- Stop the timer if active
+            
+            -- Force kill any active timer first
             if self.timerActive then
                 self:StopTimer()
             end
             
+            self.sessionActive = false
+
             -- Parse participant list with priorities
             self.participants = {}
-            local parts = {strsplit(":", message)}
-            for i = 2, #parts do
+            for i = 3, #parts do -- Start from 3 since parts[1]=command, parts[2]=sequence
                 local namePriority = {strsplit(",", parts[i])}
                 if namePriority[1] and namePriority[2] then
                     table.insert(self.participants, {
                         name = namePriority[1],
                         priority = tonumber(namePriority[2])
                     })
+                end
+            end
+            
+            -- Reset all UI elements explicitly to ensure consistency
+            for i = 1, 19 do
+                if self.priorityButtons[i] then
+                    self.priorityButtons[i]:SetEnabled(false)
+                    self.priorityButtons[i]:SetNormalFontObject("GameFontNormal")
+                    self.priorityButtons[i]:UnlockHighlight()
                 end
             end
             
@@ -653,7 +735,8 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
             -- Important: We no longer clear the item on roll end
             -- The item remains displayed until cleared manually or a new roll starts
             
-            self:UpdateUI()
+            -- Force UI update to ensure consistency
+            self:UpdateUI(true)
         end
     end
 end

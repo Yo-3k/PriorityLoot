@@ -30,7 +30,7 @@ PL.lastUIUpdateTime = 0
 PL.uiUpdateQueued = false
 PL.UI_UPDATE_THROTTLE = 0.1 -- 100ms minimum between updates
 
--- Returns true if button can be pressed again
+-- Returns true if button can be pressed again (kept for optional use)
 function PL:ButtonRelief()
     now = GetTime()
 
@@ -111,7 +111,7 @@ function PL:UpdateParticipantsList()
     self.playerListContent:SetHeight(math.max(140, yOffset))
 end
 
--- Update UI based on session state - Improved with state consistency
+-- Update UI based on session state - Improved with throttling and state consistency
 function PL:UpdateUI(force)
     -- Skip if frame not initialized yet
     if not self.PriorityLootFrame then return end
@@ -146,6 +146,9 @@ function PL:UpdateUI(force)
     -- Basic button state
     local canStartRoll = IsInRaid() and self:IsMasterLooter()
     
+    -- Lock UI during state transitions to avoid inconsistency
+    local isStateTransitioning = self.isProcessingRollAction
+    
     -- Session state logic - use the snapshot for consistency
     if stateSnapshot.sessionActive then
         self.startButton:SetEnabled(false)
@@ -153,11 +156,11 @@ function PL:UpdateUI(force)
         self.timerEditBox:SetEnabled(false)
         
         -- Enable stop button for host only
-        self.stopButton:SetEnabled(stateSnapshot.isHost)
+        self.stopButton:SetEnabled(stateSnapshot.isHost and not isStateTransitioning)
         
         -- Enable priority buttons
         for i = 1, 19 do
-            self.priorityButtons[i]:SetEnabled(true)
+            self.priorityButtons[i]:SetEnabled(not isStateTransitioning)
             
             -- Highlight current selection
             if stateSnapshot.playerPriority and stateSnapshot.playerPriority == i then
@@ -170,7 +173,7 @@ function PL:UpdateUI(force)
         end
         
         -- Enable clear button
-        self.clearButton:SetEnabled(true)
+        self.clearButton:SetEnabled(not isStateTransitioning)
         
         -- Update priority text
         if self.yourPriorityText then
@@ -182,10 +185,10 @@ function PL:UpdateUI(force)
         end
     else
         -- Not in session
-        self.startButton:SetEnabled(canStartRoll)
+        self.startButton:SetEnabled(canStartRoll and not isStateTransitioning)
         self.stopButton:SetEnabled(false)
-        self.timerCheckbox:SetEnabled(canStartRoll)
-        self.timerEditBox:SetEnabled(canStartRoll and self.timerCheckbox:GetChecked())
+        self.timerCheckbox:SetEnabled(canStartRoll and not isStateTransitioning)
+        self.timerEditBox:SetEnabled(canStartRoll and self.timerCheckbox:GetChecked() and not isStateTransitioning)
         
         -- Disable priority buttons
         for i = 1, 19 do
@@ -214,7 +217,8 @@ function PL:UpdateUI(force)
             if stateSnapshot.isHost then
                 self.sessionInfoText:SetText("You started a roll session")
             else
-                self.sessionInfoText:SetText("Roll session started by " .. self:GetDisplayName(stateSnapshot.sessionHost))
+                local hostName = self:GetDisplayName(stateSnapshot.sessionHost or "Unknown")
+                self.sessionInfoText:SetText("Roll session started by " .. hostName)
             end
         else
             self.sessionInfoText:SetText("No active roll session")
@@ -500,14 +504,18 @@ function PL:InitUI()
     self.startButton:SetSize(100, 24)
     self.startButton:SetPoint("TOPLEFT", 20, -70)
     self.startButton:SetText("Start Roll")
-    self.startButton:SetScript("OnClick", function() self:StartRollSession() end)
+    self.startButton:SetScript("OnClick", function() 
+        self:StartRollSession() 
+    end)
     
     self.stopButton = CreateFrame("Button", "PriorityLootStopButton", self.PriorityLootFrame, "UIPanelButtonTemplate")
     self.stopButton:SetSize(100, 24)
     self.stopButton:SetPoint("TOPRIGHT", -20, -70)
     self.stopButton:SetText("Stop Roll")
     self.stopButton:SetEnabled(false)
-    self.stopButton:SetScript("OnClick", function() self:StopRollSession() end)
+    self.stopButton:SetScript("OnClick", function() 
+        self:StopRollSession() 
+    end)
     
     -- Current session info
     local sessionInfoText = self.PriorityLootFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -610,7 +618,7 @@ function PL:InitUI()
     self.PriorityLootFrame:Hide()
     
     -- Initialize UI state
-    self:UpdateUI()
+    self:UpdateUI(true)
     
     self.initialized = true
     print("|cff00ff00PriorityLoot v" .. self.version .. " loaded. Type /pl or /priorityloot to open.|r")
