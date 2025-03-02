@@ -113,24 +113,17 @@ function PL:ProcessRetries()
     local msg = table.remove(self.retryMessages, 1)
     
     -- Try to send the message
-    local success, result = pcall(function()
-        return C_ChatInfo.SendAddonMessage(
-            msg.prefix,
-            msg.message,
-            msg.distribution,
-            msg.target
-        )
-    end)
+    local result = C_ChatInfo.SendAddonMessage(prefix, message, distribution, target)
     
     -- Check if there was an error or throttling
-    if not success or result == Enum.SendAddonMessageResult.AddonMessageThrottle then
+    if result == false then
         -- Increment retry count
         msg.retries = msg.retries + 1
         
         -- If we haven't exceeded max retries, queue for retry
         if msg.retries <= self.maxRetries then
             -- If it was specifically a throttle issue, try a different prefix
-            if result == Enum.SendAddonMessageResult.AddonMessageThrottle and msg.prefix ~= self.COMM_PREFIX then
+            if result == false and msg.prefix ~= self.COMM_PREFIX then
                 local nextPrefixIndex = (msg.prefixIndex % self.MAX_PREFIXES) + 1
                 msg.prefix = self.availablePrefixes[nextPrefixIndex]
                 msg.prefixIndex = nextPrefixIndex
@@ -182,17 +175,10 @@ function PL:SendMessageWithRetry(message, distribution, target)
     end
     
     -- First try to send the message directly
-    local success, result = pcall(function()
-        return C_ChatInfo.SendAddonMessage(
-            prefix,
-            message,
-            distribution,
-            target
-        )
-    end)
+    local result = C_ChatInfo.SendAddonMessage(prefix, message, distribution, target)
     
     -- If there was a problem, add to retry list
-    if not success or result == Enum.SendAddonMessageResult.AddonMessageThrottle then
+    if result == false then
         table.insert(self.retryMessages, {
             prefix = prefix,
             message = message,
