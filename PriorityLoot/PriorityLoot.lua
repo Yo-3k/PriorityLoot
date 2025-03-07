@@ -38,14 +38,18 @@ PL.currentLootItemLink = nil
 PL.currentLootItemTexture = nil
 
 -- Communication
-PL.COMM_PREFIX = "PriorityLoot"
-PL.COMM_JOIN = "JOIN"
+PL.COMM_PREFIX_HOST = "PLHost"
 PL.COMM_START = "START"
 PL.COMM_STOP = "STOP"
-PL.COMM_TIMER = "TIMER" -- For timer sync
-PL.COMM_LEAVE = "LEAVE" -- For removing player from roll
 PL.COMM_ITEM = "ITEM"   -- For sharing item data
 PL.COMM_CLEAR = "CLEAR" -- For clearing item data
+PL.COMM_TIMER = "TIMER" -- For timer sync
+
+PL.COMM_PREFIX_JOIN = "PLJoin"
+PL.COMM_JOIN = "JOIN"
+PL.COMM_LEAVE = "LEAVE" -- For removing player from roll
+
+PL.COMM_PREFIX_ID = "PLID"
 PL.COMM_ID_ASSIGN = "IDA" -- For assigning player IDs
 PL.COMM_ID_REQUEST = "IDR" -- For requesting an ID
 
@@ -136,7 +140,7 @@ end
 function PL:BroadcastTimerInfo(remainingTime)
     if not self.isHost then return end
     
-    PL:SendCommMessage(self.COMM_PREFIX, self.COMM_TIMER .. ":" .. remainingTime, self:GetDistributionChannel())
+    PL:SendCommMessage(self.COMM_PREFIX_HOST, self.COMM_TIMER .. ":" .. remainingTime, self:GetDistributionChannel())
 end
 
 -- Get class color for a player
@@ -201,7 +205,7 @@ function PL:AssignPlayerID(playerName)
     self.idToPlayerMap[newID] = normalizedName
     
     -- Broadcast ID assignment to all players
-    PL:SendCommMessage(self.COMM_PREFIX, self.COMM_ID_ASSIGN .. ":" .. normalizedName .. "," .. newID, self:GetDistributionChannel())
+    PL:SendCommMessage(self.COMM_PREFIX_ID, self.COMM_ID_ASSIGN .. ":" .. normalizedName .. "," .. newID, self:GetDistributionChannel())
     
     return newID
 end
@@ -213,7 +217,7 @@ function PL:RequestPlayerID()
         self.playerID = self:AssignPlayerID(self.playerFullName)
     else
         -- Request ID from host
-        PL:SendCommMessage(self.COMM_PREFIX, self.COMM_ID_REQUEST .. ":" .. self.playerFullName, self:GetDistributionChannel())
+        PL:SendCommMessage(self.COMM_PREFIX_ID, self.COMM_ID_REQUEST .. ":" .. self.playerFullName, self:GetDistributionChannel())
     end
 end
 
@@ -239,40 +243,44 @@ end
 
 -- Update player's priority in the participants list
 function PL:UpdatePlayerPriority(newPriority)
-    -- Store player's priority locally
-    self.playerPriority = newPriority
+    local oldPriority = self.playerPriority
     
-    -- Ensure player has an ID
-    if not self.playerID then
-        self:RequestPlayerID()
-    end
-    
-    -- Find and update player in participants list
-    local playerEntry = nil
-    for i, data in ipairs(self.participants) do
-        if self:NormalizeName(data.name) == self:NormalizeName(self.playerFullName) then
-            playerEntry = data
-            playerEntry.priority = newPriority
-            playerEntry.id = self.playerID
-            break
+    if oldPriority ~= newPriority then
+        -- Store player's priority locally
+        self.playerPriority = newPriority
+        
+        -- Ensure player has an ID
+        if not self.playerID then
+            self:RequestPlayerID()
         end
-    end
-    
-    -- If not found, add player to list
-    if not playerEntry then
-        table.insert(self.participants, {
-            name = self.playerFullName, 
-            priority = newPriority,
-            id = self.playerID
-        })
-    end
-    
-    -- Broadcast join message with updated priority and ID
-    if self.playerID then
-        PL:SendCommMessage(self.COMM_PREFIX, self.COMM_JOIN .. ":" .. self.playerFullName .. "," .. newPriority .. "," .. self.playerID, self:GetDistributionChannel())
-    else
-        -- No ID yet, broadcast without ID (it will be updated once ID is assigned)
-        PL:SendCommMessage(self.COMM_PREFIX, self.COMM_JOIN .. ":" .. self.playerFullName .. "," .. newPriority, self:GetDistributionChannel())
+        
+        -- Find and update player in participants list
+        local playerEntry = nil
+        for i, data in ipairs(self.participants) do
+            if self:NormalizeName(data.name) == self:NormalizeName(self.playerFullName) then
+                playerEntry = data
+                playerEntry.priority = newPriority
+                playerEntry.id = self.playerID
+                break
+            end
+        end
+        
+        -- If not found, add player to list
+        if not playerEntry then
+            table.insert(self.participants, {
+                name = self.playerFullName, 
+                priority = newPriority,
+                id = self.playerID
+            })
+        end
+        
+        -- Broadcast join message with updated priority and ID
+        if self.playerID then
+            PL:SendCommMessage(self.COMM_PREFIX_JOIN, self.COMM_JOIN .. ":" .. self.playerFullName .. "," .. newPriority .. "," .. self.playerID, self:GetDistributionChannel())
+        else
+            -- No ID yet, broadcast without ID (it will be updated once ID is assigned)
+            PL:SendCommMessage(self.COMM_PREFIX_JOIN, self.COMM_JOIN .. ":" .. self.playerFullName .. "," .. newPriority, self:GetDistributionChannel())
+        end
     end
     
     -- Update UI
@@ -302,9 +310,9 @@ function PL:ClearPlayerRoll()
     
     -- Broadcast removal to all raid members (using ID if available)
     if self.playerID then
-        PL:SendCommMessage(self.COMM_PREFIX, self.COMM_LEAVE .. ":" .. self.playerID, self:GetDistributionChannel())
+        PL:SendCommMessage(self.COMM_PREFIX_JOIN, self.COMM_LEAVE .. ":" .. self.playerID, self:GetDistributionChannel())
     else
-        PL:SendCommMessage(self.COMM_PREFIX, self.COMM_LEAVE .. ":" .. self.playerFullName, self:GetDistributionChannel())
+        PL:SendCommMessage(self.COMM_PREFIX_JOIN, self.COMM_LEAVE .. ":" .. self.playerFullName, self:GetDistributionChannel())
     end
     
     print("|cffff9900You have removed yourself from the roll.|r")
@@ -389,7 +397,7 @@ function PL:SetCurrentItem(itemLink)
     -- Broadcast item to other players if you're the host
     if self:IsMasterLooter() then        
         -- Use a specific message format that won't break item links
-        PL:SendCommMessage(self.COMM_PREFIX, self.COMM_ITEM .. ":" .. itemLink, self:GetDistributionChannel())
+        PL:SendCommMessage(self.COMM_PREFIX_HOST, self.COMM_ITEM .. ":" .. itemLink, self:GetDistributionChannel())
     end
     
     -- Update UI
@@ -401,7 +409,7 @@ function PL:ClearCurrentItem()
     -- Only broadcast if we're the host and there's an item to clear
     if self:IsMasterLooter() and self.currentLootItemLink then
         -- Broadcast clear item command
-        PL:SendCommMessage(self.COMM_PREFIX, self.COMM_CLEAR, self:GetDistributionChannel())
+        PL:SendCommMessage(self.COMM_PREFIX_HOST, self.COMM_CLEAR, self:GetDistributionChannel())
         print("|cffff9900Item cleared.|r")
     end
     
@@ -446,12 +454,12 @@ function PL:StartRollSession()
     self:UpdateUI(true)
 
     -- Broadcast start message - send item link in a separate message to ensure it's intact
-    PL:SendCommMessage(self.COMM_PREFIX, self.COMM_START, self:GetDistributionChannel())
+    PL:SendCommMessage(self.COMM_PREFIX_HOST, self.COMM_START, self:GetDistributionChannel())
     
     -- Send item link as a separate message if available
     if self.currentLootItemLink then
         -- Share item again just to be sure
-        PL:SendCommMessage(self.COMM_PREFIX, self.COMM_ITEM .. ":" .. self.currentLootItemLink, self:GetDistributionChannel())
+        PL:SendCommMessage(self.COMM_PREFIX_HOST, self.COMM_ITEM .. ":" .. self.currentLootItemLink, self:GetDistributionChannel())
         
         -- Show raid warning with item
         local message = "Roll started for " .. self.currentLootItemLink
@@ -515,7 +523,7 @@ function PL:StopRollSession()
         end
     end
     
-    PL:SendCommMessage(self.COMM_PREFIX, message, self:GetDistributionChannel())
+    PL:SendCommMessage(self.COMM_PREFIX_HOST, message, self:GetDistributionChannel())
     
     print("|cffff9900Roll session ended. Results are displayed.|r")
     
@@ -602,7 +610,7 @@ end
 
 -- Handle addon communication
 function PL:OnCommReceived(prefix, message, distribution, sender)
-    if prefix ~= self.COMM_PREFIX then return end
+    if prefix ~= self.COMM_PREFIX_HOST or prefix ~= self.COMM_PREFIX_JOIN or prefix ~= self.COMM_PREFIX_ID then return end
 
     -- Normalize the sender name for consistent comparison
     local normalizedSender = self:NormalizeName(sender)
@@ -882,10 +890,16 @@ end
 local function OnEvent(self, event, ...)
     if event == "ADDON_LOADED" and ... == addonName then
         -- Register comm prefix
-        PL:RegisterComm(PL.COMM_PREFIX, function(prefix, message, distribution, sender)
+        PL:RegisterComm(PL.COMM_PREFIX_HOST, function(prefix, message, distribution, sender)
         PL:OnCommReceived(prefix, message, distribution, sender)
         end)
-        
+        PL:RegisterComm(PL.COMM_PREFIX_JOIN, function(prefix, message, distribution, sender)
+            PL:OnCommReceived(prefix, message, distribution, sender)
+        end)
+        PL:RegisterComm(PL.COMM_PREFIX_ID, function(prefix, message, distribution, sender)
+            PL:OnCommReceived(prefix, message, distribution, sender)
+        end)
+
         -- Get player's full name (with server)
         PL.playerFullName = PL:GetPlayerFullName()
         
