@@ -15,7 +15,6 @@ PL.timerCheckbox = nil
 PL.timerEditBox = nil
 PL.timerDisplay = nil
 PL.clearButton = nil -- Clear button
-PL.throttleDisplay = nil -- Message throttle display
 
 -- Item display elements
 PL.itemDropFrame = nil
@@ -92,7 +91,7 @@ function PL:UpdateParticipantsList()
 end
 
 -- Update UI based on session state
-function PL:UpdateUI(forceUpdate)
+function PL:UpdateUI()
     if not self.PriorityLootFrame then return end
     
     -- Session state logic
@@ -174,13 +173,6 @@ function PL:UpdateUI(forceUpdate)
     
     -- Update participants list
     self:UpdateParticipantsList()
-    
-    -- Update throttle display with retry count
-    if self.retryMessages then
-        self:UpdateThrottleDisplay(#self.retryMessages)
-    else
-        self:UpdateThrottleDisplay(0)
-    end
 end
 
 -- Check if player is host or is allowed to manage items
@@ -376,7 +368,7 @@ end
 function PL:InitUI()
     -- Main frame
     self.PriorityLootFrame = CreateFrame("Frame", "PriorityLootFrame", UIParent, "BackdropTemplate")
-    self.PriorityLootFrame:SetSize(260, 520) -- Slightly taller to accommodate message status
+    self.PriorityLootFrame:SetSize(260, 500)
     self.PriorityLootFrame:SetPoint("CENTER")
     self.PriorityLootFrame:SetBackdrop({
         bgFile = "Interface/Tooltips/UI-Tooltip-Background",
@@ -397,16 +389,6 @@ function PL:InitUI()
     local title = self.PriorityLootFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     title:SetPoint("TOP", 0, -10)
     title:SetText("Priority Loot")
-    
-    -- Prefix Display (Add this to show which prefix this player is using)
-    local prefixText = self.PriorityLootFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    prefixText:SetPoint("TOPRIGHT", -25, -10)
-    if self.myPrefixIndex then
-        local prefixNum = self.myPrefixIndex
-        prefixText:SetText("Prefix: " .. prefixNum)
-    else
-        prefixText:SetText("No prefix")
-    end
     
     -- Timer checkbox
     self.timerCheckbox = CreateFrame("CheckButton", "PriorityLootTimerCheckbox", self.PriorityLootFrame, "UICheckButtonTemplate")
@@ -541,15 +523,9 @@ function PL:InitUI()
     yourPriorityText:SetText("Your priority: None")
     self.yourPriorityText = yourPriorityText
     
-    -- Add throttle status display
-    self.throttleDisplay = self.PriorityLootFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    self.throttleDisplay:SetPoint("TOP", yourPriorityText, "BOTTOM", 0, -5)
-    self.throttleDisplay:SetText("Message system: Ready")
-    self.throttleDisplay:SetTextColor(0, 1, 0) -- Green by default
-    
-    -- Player list frame - moved down to ensure it's below the priority text
+    -- Player list frame - moved down to ensure it's below the priority buttons
     local listTitleText = self.PriorityLootFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    listTitleText:SetPoint("TOP", self.throttleDisplay, "BOTTOM", 0, -5) -- Position relative to throttle display
+    listTitleText:SetPoint("TOP", yourPriorityText, "BOTTOM", 0, -5) -- Position relative to priority frame
     listTitleText:SetText("Participants")
     
     -- Create a parent frame for the scroll frame to fix the slider position
@@ -585,19 +561,4 @@ function PL:InitUI()
     
     self.initialized = true
     print("|cff00ff00PriorityLoot v" .. self.version .. " loaded. Type /pl or /priorityloot to open.|r")
-    
-    -- Initial throttle display update
-    self:UpdateThrottleDisplay(0)
-    
-    -- Create a frame to regularly update the message status
-    local statusUpdateFrame = CreateFrame("Frame")
-    statusUpdateFrame:SetScript("OnUpdate", function(frame, elapsed)
-        frame.elapsed = (frame.elapsed or 0) + elapsed
-        if frame.elapsed < 1 then return end -- Update once per second
-        frame.elapsed = 0
-        
-        if self.PriorityLootFrame:IsVisible() and self.retryMessages then
-            self:UpdateThrottleDisplay(#self.retryMessages)
-        end
-    end)
 end

@@ -27,7 +27,7 @@ PL.playerPriority = nil -- Track current player's selected priority
 PL.currentLootItemLink = nil
 PL.currentLootItemTexture = nil
 
--- Communication constants
+-- Communication
 PL.COMM_PREFIX = "PriorityLoot"
 PL.COMM_JOIN = "JOIN"
 PL.COMM_START = "START"
@@ -36,18 +36,6 @@ PL.COMM_TIMER = "TIMER" -- For timer sync
 PL.COMM_LEAVE = "LEAVE" -- For removing player from roll
 PL.COMM_ITEM = "ITEM"   -- For sharing item data
 PL.COMM_CLEAR = "CLEAR" -- For clearing item data
-PL.COMM_PREFIXLIST = "PREFIXLIST" -- For sharing prefix list
-
--- For the multi-prefix solution
-PL.prefixFormat = "PL%d" -- Will create PL1, PL2, PL3, etc.
-PL.myPrefixIndex = nil -- This will be assigned during initialization
-PL.registeredPrefixes = {} -- Track which prefixes we've registered
-PL.availablePrefixes = {} -- Prefix pool that all raid members will share
-PL.MAX_PREFIXES = 10 -- Maximum number of different prefixes we'll use
-PL.retryMessages = {} -- Simple structure to store messages that need to be retried
-PL.retryInterval = 0.5 -- Retry every 0.5 seconds
-PL.maxRetries = 10 -- Maximum number of retry attempts
-PL.retryFrame = nil -- Frame for handling message retries
 
 -- Class colors table
 PL.CLASS_COLORS = {
@@ -61,159 +49,6 @@ PL.CLASS_COLORS = {
     ["WARLOCK"] = "9482C9",
     ["DRUID"] = "FF7D0A"
 }
-
--- Initialize the multi-prefix system
-function PL:InitPrefixSystem()
-    -- Create available prefix pool
-    for i = 1, self.MAX_PREFIXES do
-        table.insert(self.availablePrefixes, string.format(self.prefixFormat, i))
-    end
-    
-    -- Register our main prefix (always used for coordination)
-    C_ChatInfo.RegisterAddonMessagePrefix(self.COMM_PREFIX)
-    self.registeredPrefixes[self.COMM_PREFIX] = true
-    
-    -- Register all available prefixes (this ensures everyone listens to all prefixes)
-    for _, prefix in ipairs(self.availablePrefixes) do
-        C_ChatInfo.RegisterAddonMessagePrefix(prefix)
-        self.registeredPrefixes[prefix] = true
-    end
-    
-    -- Assign our own prefix based on a hash of the player name for consistency
-    local playerName = UnitName("player")
-    local hash = 0
-    for i = 1, #playerName do
-        hash = hash + string.byte(playerName, i)
-    end
-    self.myPrefixIndex = (hash % self.MAX_PREFIXES) + 1
-    
-    -- Create frame for retry handling
-    self.retryFrame = CreateFrame("Frame")
-    self.retryFrame:SetScript("OnUpdate", function(frame, elapsed)
-        frame.elapsed = (frame.elapsed or 0) + elapsed
-        if frame.elapsed < self.retryInterval then return end
-        frame.elapsed = 0
-        
-        -- Process any pending retries
-        self:ProcessRetries()
-    end)
-end
-
--- Get our assigned prefix 
-function PL:GetMyPrefix()
-    if not self.myPrefixIndex then return self.COMM_PREFIX end
-    return self.availablePrefixes[self.myPrefixIndex]
-end
-
--- Process message retries
-function PL:ProcessRetries()
-    if #self.retryMessages == 0 then return end
-    
-    -- Process the first message in the retry list
-    local msg = table.remove(self.retryMessages, 1)
-    
-    -- Try to send the message
-    local result = C_ChatInfo.SendAddonMessage(prefix, message, distribution, target)
-    
-    -- Check if there was an error or throttling
-    if result == false then
-        -- Increment retry count
-        msg.retries = msg.retries + 1
-        
-        -- If we haven't exceeded max retries, queue for retry
-        if msg.retries <= self.maxRetries then
-            -- If it was specifically a throttle issue, try a different prefix
-            if result == false and msg.prefix ~= self.COMM_PREFIX then
-                local nextPrefixIndex = (msg.prefixIndex % self.MAX_PREFIXES) + 1
-                msg.prefix = self.availablePrefixes[nextPrefixIndex]
-                msg.prefixIndex = nextPrefixIndex
-            end
-            
-            -- Put back at the end of the retry queue
-            table.insert(self.retryMessages, msg)
-        else
-            -- Try again with the main prefix as a fallback
-            if msg.prefix ~= self.COMM_PREFIX then
-                msg.prefix = self.COMM_PREFIX
-                msg.retries = 0
-                table.insert(self.retryMessages, msg)
-            else
-                -- Exceeded max retries - this is bad, we're just going to force it
-                -- We don't want to lose messages, so we'll keep trying, but less frequently
-                msg.retries = msg.retries - 5 -- Reset some of the retry count
-                table.insert(self.retryMessages, msg)
-                
-                -- Print a warning since this is unusual
-                if not msg.warningPrinted then
-                    print("|cffff0000Warning: Having trouble sending addon messages. If this persists, try reloading UI.|r")
-                    msg.warningPrinted = true
-                end
-            end
-        end
-        
-        -- Update throttle display to indicate retry state
-        self:UpdateThrottleDisplay(#self.retryMessages)
-    else
-        -- Message sent successfully - update throttle display if any messages left
-        if #self.retryMessages > 0 then
-            self:UpdateThrottleDisplay(#self.retryMessages)
-        else
-            self:UpdateThrottleDisplay(0)
-        end
-    end
-end
-
--- Send message with automatic retry if it fails, using our unique prefix
-function PL:SendMessageWithRetry(message, distribution, target)
-    -- The prefix we'll try initially
-    local prefix = self:GetMyPrefix()
-    local prefixIndex = self.myPrefixIndex
-    
-    -- For coordination messages, always use the main prefix
-    if message:find(self.COMM_PREFIXLIST) == 1 then
-        prefix = self.COMM_PREFIX
-    end
-    
-    -- First try to send the message directly
-    local result = C_ChatInfo.SendAddonMessage(prefix, message, distribution, target)
-    
-    -- If there was a problem, add to retry list
-    if result == false then
-        table.insert(self.retryMessages, {
-            prefix = prefix,
-            message = message,
-            distribution = distribution,
-            target = target,
-            retries = 0,
-            prefixIndex = prefixIndex,
-            warningPrinted = false
-        })
-        
-        -- Update throttle display to show pending retries
-        self:UpdateThrottleDisplay(#self.retryMessages)
-        return false
-    end
-    
-    return true
-end
-
--- Update the throttle display for retries
-function PL:UpdateThrottleDisplay(retryCount)
-    if not self.throttleDisplay then return end
-    
-    if retryCount and retryCount > 0 then
-        if retryCount > 5 then
-            self.throttleDisplay:SetText("Messages pending: " .. retryCount)
-            self.throttleDisplay:SetTextColor(1, 0, 0) -- Red
-        else
-            self.throttleDisplay:SetText("Messages pending: " .. retryCount)
-            self.throttleDisplay:SetTextColor(1, 0.5, 0) -- Orange
-        end
-    else
-        self.throttleDisplay:SetText("Message system: Ready")
-        self.throttleDisplay:SetTextColor(0, 1, 0) -- Green
-    end
-end
 
 -- Get player's full name with server
 function PL:GetPlayerFullName()
@@ -289,10 +124,7 @@ end
 function PL:BroadcastTimerInfo(remainingTime)
     if not self.isHost then return end
     
-    self:SendMessageWithRetry(
-        self.COMM_TIMER .. ":" .. remainingTime,
-        self:GetDistributionChannel()
-    )
+    C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, self.COMM_TIMER .. ":" .. remainingTime, self:GetDistributionChannel())
 end
 
 -- Get class color for a player
@@ -356,32 +188,11 @@ function PL:UpdatePlayerPriority(newPriority)
         table.insert(self.participants, {name = self.playerFullName, priority = newPriority})
     end
     
-    -- Send JOIN message using player's unique prefix
-    self:SendMessageWithRetry(
-        self.COMM_JOIN .. ":" .. self.playerFullName .. "," .. newPriority,
-        self:GetDistributionChannel()
-    )
+    -- Broadcast join message with updated priority
+    C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, self.COMM_JOIN .. ":" .. self.playerFullName .. "," .. newPriority, self:GetDistributionChannel())
     
     -- Update UI
     self:UpdateUI()
-    
-    -- Highlight the selected button
-    for i = 1, 19 do
-        if i == newPriority then
-            self.priorityButtons[i]:SetNormalFontObject("GameFontHighlight")
-            self.priorityButtons[i]:LockHighlight()
-        else
-            self.priorityButtons[i]:SetNormalFontObject("GameFontNormal")
-            self.priorityButtons[i]:UnlockHighlight()
-        end
-    end
-    
-    -- Print message based on whether this is a change or initial join
-    if self:HasPlayerJoined(self.playerFullName) then
-        print("|cff00ff00You changed your priority to " .. newPriority .. ".|r")
-    else
-        print("|cff00ff00You joined the roll with priority " .. newPriority .. ".|r")
-    end
 end
 
 -- Clear player from the current roll
@@ -405,11 +216,8 @@ function PL:ClearPlayerRoll()
     -- Reset player's priority
     self.playerPriority = nil
     
-    -- Broadcast leave message
-    self:SendMessageWithRetry(
-        self.COMM_LEAVE .. ":" .. self.playerFullName,
-        self:GetDistributionChannel()
-    )
+    -- Broadcast removal to all raid members
+    C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, self.COMM_LEAVE .. ":" .. self.playerFullName, self:GetDistributionChannel())
     
     print("|cffff9900You have removed yourself from the roll.|r")
     
@@ -492,10 +300,8 @@ function PL:SetCurrentItem(itemLink)
     
     -- Broadcast item to other players if you're the host
     if self:IsMasterLooter() then        
-        self:SendMessageWithRetry(
-            self.COMM_ITEM .. ":" .. itemLink,
-            self:GetDistributionChannel()
-        )
+        -- Use a specific message format that won't break item links
+        C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, self.COMM_ITEM .. ":" .. itemLink, self:GetDistributionChannel())
     end
     
     -- Update UI
@@ -507,10 +313,7 @@ function PL:ClearCurrentItem()
     -- Only broadcast if we're the host and there's an item to clear
     if self:IsMasterLooter() and self.currentLootItemLink then
         -- Broadcast clear item command
-        self:SendMessageWithRetry(
-            self.COMM_CLEAR,
-            self:GetDistributionChannel()
-        )
+        C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, self.COMM_CLEAR, self:GetDistributionChannel())
         print("|cffff9900Item cleared.|r")
     end
     
@@ -546,18 +349,13 @@ function PL:StartRollSession()
     -- Update UI immediately to reflect state change
     self:UpdateUI(true)
     
-    -- Broadcast start message
-    self:SendMessageWithRetry(
-        self.COMM_START,
-        self:GetDistributionChannel()
-    )
+    -- Broadcast start message - send item link in a separate message to ensure it's intact
+    C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, self.COMM_START, self:GetDistributionChannel())
     
     -- Send item link as a separate message if available
     if self.currentLootItemLink then
-        self:SendMessageWithRetry(
-            self.COMM_ITEM .. ":" .. self.currentLootItemLink,
-            self:GetDistributionChannel()
-        )
+        -- Share item again just to be sure
+        C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, self.COMM_ITEM .. ":" .. self.currentLootItemLink, self:GetDistributionChannel())
         
         -- Show raid warning with item
         local message = "Roll started for " .. self.currentLootItemLink
@@ -613,45 +411,13 @@ function PL:StopRollSession()
     -- Update UI immediately to reflect state change
     self:UpdateUI(true)
     
-    -- We need to break the participant list into chunks if it's large
-    local chunkSize = 5 -- Maximum participants per message
-    local participantChunks = {}
-    local chunk = {}
-    
-    for i, data in ipairs(self.participants) do
-        table.insert(chunk, data.name .. "," .. data.priority)
-        
-        if #chunk >= chunkSize or i == #self.participants then
-            table.insert(participantChunks, chunk)
-            chunk = {}
-        end
-    end
-    
-    -- Send first chunk with main stop message
+    -- Broadcast stop message with participant list
     local message = self.COMM_STOP
-    if #participantChunks > 0 then
-        for _, participant in ipairs(participantChunks[1]) do
-            message = message .. ":" .. participant
-        end
+    for i, data in ipairs(self.participants) do
+        message = message .. ":" .. data.name .. "," .. data.priority
     end
     
-    self:SendMessageWithRetry(
-        message,
-        self:GetDistributionChannel()
-    )
-    
-    -- Send additional chunks if there are more
-    for i = 2, #participantChunks do
-        local additionalMessage = self.COMM_STOP .. "_more"
-        for _, participant in ipairs(participantChunks[i]) do
-            additionalMessage = additionalMessage .. ":" .. participant
-        end
-        
-        self:SendMessageWithRetry(
-            additionalMessage,
-            self:GetDistributionChannel()
-        )
-    end
+    C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, message, self:GetDistributionChannel())
     
     print("|cffff9900Roll session ended. Results are displayed.|r")
     
@@ -700,6 +466,24 @@ function PL:JoinRoll(priority)
     
     -- Update player's priority (whether joining fresh or changing)
     self:UpdatePlayerPriority(priority)
+    
+    -- Highlight the selected button
+    for i = 1, 19 do
+        if i == priority then
+            self.priorityButtons[i]:SetNormalFontObject("GameFontHighlight")
+            self.priorityButtons[i]:LockHighlight()
+        else
+            self.priorityButtons[i]:SetNormalFontObject("GameFontNormal")
+            self.priorityButtons[i]:UnlockHighlight()
+        end
+    end
+    
+    -- Print message based on whether this is a change or initial join
+    if self:HasPlayerJoined(self.playerFullName) then
+        print("|cff00ff00You changed your priority to " .. priority .. ".|r")
+    else
+        print("|cff00ff00You joined the roll with priority " .. priority .. ".|r")
+    end
 end
 
 -- Check if player has already joined
@@ -715,21 +499,7 @@ end
 
 -- Handle addon communication
 function PL:OnCommReceived(prefix, message, distribution, sender)
-    -- Accept messages from our main prefix
-    local isOurPrefix = (prefix == self.COMM_PREFIX)
-    
-    -- Or from any of our available prefixes
-    for _, availablePrefix in ipairs(self.availablePrefixes) do
-        if prefix == availablePrefix then
-            isOurPrefix = true
-            break
-        end
-    end
-    
-    -- Early return if not our prefix
-    if not isOurPrefix then
-        return
-    end
+    if prefix ~= self.COMM_PREFIX then return end
     
     -- Normalize the sender name for consistent comparison
     local normalizedSender = self:NormalizeName(sender)
@@ -878,43 +648,6 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
             -- The item remains displayed until cleared manually or a new roll starts
             
             self:UpdateUI()
-            
-        elseif message:find(self.COMM_STOP .. "_more") == 1 then
-            -- Process additional participant chunks from a stop message
-            -- Only process if session is already stopped
-            if self.sessionActive then return end
-            
-            -- Parse additional participant list
-            local parts = {strsplit(":", message)}
-            for i = 2, #parts do
-                local namePriority = {strsplit(",", parts[i])}
-                if namePriority[1] and namePriority[2] then
-                    -- Check if this player is already in the list
-                    local found = false
-                    for j, data in ipairs(self.participants) do
-                        if self:NormalizeName(data.name) == self:NormalizeName(namePriority[1]) then
-                            found = true
-                            break
-                        end
-                    end
-                    
-                    -- Add only if not already in the list
-                    if not found then
-                        table.insert(self.participants, {
-                            name = namePriority[1],
-                            priority = tonumber(namePriority[2])
-                        })
-                    end
-                end
-            end
-            
-            -- Sort participants by priority
-            table.sort(self.participants, function(a, b)
-                return a.priority < b.priority
-            end)
-            
-            -- Update UI with new participant list
-            self:UpdateUI()
         end
     end
 end
@@ -942,8 +675,8 @@ end
 -- Initialize the addon
 local function OnEvent(self, event, ...)
     if event == "ADDON_LOADED" and ... == addonName then
-        -- Initialize prefix system
-        PL:InitPrefixSystem()
+        -- Register comm prefix
+        C_ChatInfo.RegisterAddonMessagePrefix(PL.COMM_PREFIX)
         
         -- Get player's full name (with server)
         PL.playerFullName = PL:GetPlayerFullName()
