@@ -10,6 +10,7 @@ PL.interfaceVersion = 11506 -- Classic SoD
 -- Pull in AceComm
 LibStub("AceComm-3.0"):Embed(PL)
 
+
 -- Initialize variables
 PL.isHost = false
 PL.sessionActive = false
@@ -25,8 +26,12 @@ PL.timerActive = false
 PL.timerEndTime = 0
 PL.timerFrame = nil
 PL.playerPriority = nil -- Track current player's selected priority
-PL.collectingResults = false -- Flag for when we're collecting results
-PL.prioritiesReceived = {} -- Track which players have submitted priorities
+
+-- Player ID system
+PL.playerIDMap = {} -- Maps player names to IDs
+PL.idToPlayerMap = {} -- Maps IDs to player names
+PL.playerID = nil -- Current player's ID
+PL.nextAvailableID = 1 -- Start IDs from 1 (0-99 possible)
 
 -- Item tracking variables
 PL.currentLootItemLink = nil
@@ -41,7 +46,8 @@ PL.COMM_TIMER = "TIMER" -- For timer sync
 PL.COMM_LEAVE = "LEAVE" -- For removing player from roll
 PL.COMM_ITEM = "ITEM"   -- For sharing item data
 PL.COMM_CLEAR = "CLEAR" -- For clearing item data
-PL.COMM_PRIORITY = "PRIO" -- For sending priority at the end of the roll
+PL.COMM_ID_ASSIGN = "IDA" -- For assigning player IDs
+PL.COMM_ID_REQUEST = "IDR" -- For requesting an ID
 
 -- Class colors table
 PL.CLASS_COLORS = {
@@ -174,17 +180,100 @@ function PL:GetClassColor(name)
     return defaultColor
 end
 
--- Broadcast player's priority only at the end of roll
-function PL:BroadcastFinalPriority()
-    if not self.playerPriority then return end
+-- Assign a unique ID to a player (host only)
+function PL:AssignPlayerID(playerName)
+    if not self.isHost then return nil end
     
-    PL:SendCommMessage(self.COMM_PREFIX, self.COMM_PRIORITY .. ":" .. self.playerFullName .. "," .. self.playerPriority, self:GetDistributionChannel())
+    -- Normalize player name for consistent keys
+    local normalizedName = self:NormalizeName(playerName)
+    
+    -- Return existing ID if already assigned
+    if self.playerIDMap[normalizedName] then
+        return self.playerIDMap[normalizedName]
+    end
+    
+    -- Assign new ID (using modulo to keep it within 0-99)
+    local newID = self.nextAvailableID % 100
+    self.nextAvailableID = self.nextAvailableID + 1
+    
+    -- Store mappings
+    self.playerIDMap[normalizedName] = newID
+    self.idToPlayerMap[newID] = normalizedName
+    
+    -- Broadcast ID assignment to all players
+    PL:SendCommMessage(self.COMM_PREFIX, self.COMM_ID_ASSIGN .. ":" .. normalizedName .. "," .. newID, self:GetDistributionChannel())
+    
+    return newID
 end
 
--- Add player to participants list without priority value
-function PL:JoinRollWithoutPriority()
-    -- Only send join status, not priority
-    PL:SendCommMessage(self.COMM_PREFIX, self.COMM_JOIN .. ":" .. self.playerFullName, self:GetDistributionChannel())
+-- Request an ID from the host
+function PL:RequestPlayerID()
+    if self.isHost then
+        -- If we're the host, just assign ourselves an ID
+        self.playerID = self:AssignPlayerID(self.playerFullName)
+    else
+        -- Request ID from host
+        PL:SendCommMessage(self.COMM_PREFIX, self.COMM_ID_REQUEST .. ":" .. self.playerFullName, self:GetDistributionChannel())
+    end
+end
+
+-- Get player ID (requesting one if needed)
+function PL:GetPlayerID(playerName)
+    local normalizedName = self:NormalizeName(playerName or self.playerFullName)
+    
+    -- Try to get existing ID
+    local id = self.playerIDMap[normalizedName]
+    
+    -- If no ID and we're the host, assign one
+    if not id and self.isHost then
+        id = self:AssignPlayerID(normalizedName)
+    end
+    
+    return id
+end
+
+-- Get player name from ID
+function PL:GetPlayerNameFromID(id)
+    return self.idToPlayerMap[id]
+end
+
+-- Update player's priority in the participants list
+function PL:UpdatePlayerPriority(newPriority)
+    -- Store player's priority locally
+    self.playerPriority = newPriority
+    
+    -- Ensure player has an ID
+    if not self.playerID then
+        self:RequestPlayerID()
+    end
+    
+    -- Find and update player in participants list
+    local playerEntry = nil
+    for i, data in ipairs(self.participants) do
+        if self:NormalizeName(data.name) == self:NormalizeName(self.playerFullName) then
+            playerEntry = data
+            playerEntry.priority = newPriority
+            playerEntry.id = self.playerID
+            break
+        end
+    end
+    
+    -- If not found, add player to list
+    if not playerEntry then
+        table.insert(self.participants, {
+            name = self.playerFullName, 
+            priority = newPriority,
+            id = self.playerID
+        })
+    end
+    
+    -- Broadcast join message with updated priority and ID
+    if self.playerID then
+        PL:SendCommMessage(self.COMM_PREFIX, self.COMM_JOIN .. ":" .. self.playerFullName .. "," .. newPriority .. "," .. self.playerID, self:GetDistributionChannel())
+    else
+        -- No ID yet, broadcast without ID (it will be updated once ID is assigned)
+        PL:SendCommMessage(self.COMM_PREFIX, self.COMM_JOIN .. ":" .. self.playerFullName .. "," .. newPriority, self:GetDistributionChannel())
+    end
     
     -- Update UI
     self:UpdateUI()
@@ -211,8 +300,12 @@ function PL:ClearPlayerRoll()
     -- Reset player's priority
     self.playerPriority = nil
     
-    -- Broadcast removal to all raid members
-    PL:SendCommMessage(self.COMM_PREFIX, self.COMM_LEAVE .. ":" .. self.playerFullName, self:GetDistributionChannel())
+    -- Broadcast removal to all raid members (using ID if available)
+    if self.playerID then
+        PL:SendCommMessage(self.COMM_PREFIX, self.COMM_LEAVE .. ":" .. self.playerID, self:GetDistributionChannel())
+    else
+        PL:SendCommMessage(self.COMM_PREFIX, self.COMM_LEAVE .. ":" .. self.playerFullName, self:GetDistributionChannel())
+    end
     
     print("|cffff9900You have removed yourself from the roll.|r")
     
@@ -340,11 +433,18 @@ function PL:StartRollSession()
     self.sessionHost = self.playerFullName
     self.participants = {}
     self.playerPriority = nil -- Reset player's priority
-    self.prioritiesReceived = {} -- Reset priority tracking
+    
+    -- Reset ID system for new session
+    self.playerIDMap = {}
+    self.idToPlayerMap = {}
+    self.nextAvailableID = 1
+    
+    -- Assign ourselves an ID as host
+    self.playerID = self:AssignPlayerID(self.playerFullName)
     
     -- Update UI immediately to reflect state change
     self:UpdateUI(true)
-    
+
     -- Broadcast start message - send item link in a separate message to ensure it's intact
     PL:SendCommMessage(self.COMM_PREFIX, self.COMM_START, self:GetDistributionChannel())
     
@@ -398,10 +498,6 @@ function PL:StopRollSession()
     
     -- Update the state variables
     self.sessionActive = false
-    self.collectingResults = true -- Start collecting results
-    
-    -- Reset priorities received tracking
-    self.prioritiesReceived = {}
     
     -- Stop the timer if active
     if self.timerActive then
@@ -411,126 +507,42 @@ function PL:StopRollSession()
     -- Update UI immediately to reflect state change
     self:UpdateUI(true)
     
-    -- Broadcast stop message to trigger all players to send priorities
-    PL:SendCommMessage(self.COMM_PREFIX, self.COMM_STOP, self:GetDistributionChannel())
-    
-    print("|cffff9900Roll session ended. Collecting priorities...|r")
-    
-    -- Send our own priority immediately
-    self:BroadcastFinalPriority()
-    
-    -- Mark our own priority as received
-    if self.playerPriority then
-        self.prioritiesReceived[self:NormalizeName(self.playerFullName)] = true
-    end
-    
-    -- Check if we're the only participant
-    self:CheckAllPrioritiesReceived()
-end
-
--- Check if all priorities have been received
-function PL:CheckAllPrioritiesReceived()
-    if not self.collectingResults then return end
-    
-    local allReceived = true
-    local missingCount = 0
-    local missingPlayers = {}
-    
-    -- Count how many participants are missing priorities
-    for _, participant in ipairs(self.participants) do
-        local normalizedName = self:NormalizeName(participant.name)
-        if not self.prioritiesReceived[normalizedName] and not self.isHost then
-            allReceived = false
-            missingCount = missingCount + 1
-            table.insert(missingPlayers, self:GetDisplayName(participant.name))
+    -- Broadcast stop message with participant IDs and priorities (compact format)
+    local message = self.COMM_STOP
+    for i, data in ipairs(self.participants) do
+        if data.id then -- Only include participants with valid IDs
+            message = message .. ":" .. data.id .. "," .. data.priority
         end
     end
     
-    -- If there are no participants or all priorities received, finalize results
-    if #self.participants == 0 or allReceived then
-        -- All priorities received, finalize results
-        self.collectingResults = false
-        
-        -- Sort participants by priority (lower is better)
-        table.sort(self.participants, function(a, b)
-            -- If either one has no priority, sort them to the end
-            if not a.priority then return false end
-            if not b.priority then return true end
-            return a.priority < b.priority
-        end)
-        
-        -- Display raid warning with results (only if host)
-        if self.isHost then
-            self:AnnounceResults()
+    PL:SendCommMessage(self.COMM_PREFIX, message, self:GetDistributionChannel())
+    
+    print("|cffff9900Roll session ended. Results are displayed.|r")
+    
+    -- Sort participants by priority (lower is better)
+    table.sort(self.participants, function(a, b)
+        return a.priority < b.priority
+    end)
+    
+    -- Display raid warning with results
+    if #self.participants > 0 then
+        local resultMessage = ""
+        if self.currentLootItemLink then
+            resultMessage = "Roll results for " .. self.currentLootItemLink .. ": "
+        else
+            resultMessage = "Roll results: "
         end
         
-        -- Final UI update
-        self:UpdateUI(true)
-        
-        if self.isHost then
-            print("|cff00ff00All priorities received. Results finalized.|r")
-        end
-    else
-        -- Still waiting for some priorities
-        if self.isHost then
-            if missingCount == 1 then
-                print("|cffff9900Waiting for " .. missingPlayers[1] .. " to submit their priority...|r")
-            else
-                print("|cffff9900Waiting for " .. missingCount .. " players to submit their priorities: " .. table.concat(missingPlayers, ", ") .. "|r")
-            end
-        end
-    end
-end
-
--- Announce roll results to raid
-function PL:AnnounceResults()
-    if #self.participants == 0 then return end
-    
-    -- Count how many players have priorities
-    local playersWithPriority = 0
-    for _, data in ipairs(self.participants) do
-        if data.priority then
-            playersWithPriority = playersWithPriority + 1
-        end
-    end
-    
-    -- If no one submitted priorities, exit
-    if playersWithPriority == 0 then
-        local noResultsMsg = "No priorities were submitted for the roll."
-        print("|cffff9900" .. noResultsMsg .. "|r")
-        
-        if self.isHost then
-            local chatChannel = IsInRaid() and "RAID_WARNING" or "PARTY"
-            SendChatMessage(noResultsMsg, chatChannel)
-        end
-        return
-    end
-    
-    local resultMessage = ""
-    if self.currentLootItemLink then
-        resultMessage = "Roll results for " .. self.currentLootItemLink .. ": "
-    else
-        resultMessage = "Roll results: "
-    end
-    
-    -- Find all players with valid priorities and the same highest priority
-    local highestPriority = nil
-    
-    -- Find the highest (lowest number) valid priority
-    for _, data in ipairs(self.participants) do
-        if data.priority then
-            if highestPriority == nil or data.priority < highestPriority then
-                highestPriority = data.priority
-            end
-        end
-    end
-    
-    if highestPriority then
+        -- Find all players with the same highest priority
+        local highestPriority = self.participants[1].priority
         local winners = {}
         
-        for _, data in ipairs(self.participants) do
+        for i, data in ipairs(self.participants) do
             if data.priority == highestPriority then
                 table.insert(winners, self:GetDisplayName(data.name) .. " (" .. data.priority .. ")")
+            else
+                -- Stop once we reach a different priority
+                break
             end
         end
         
@@ -538,48 +550,25 @@ function PL:AnnounceResults()
         resultMessage = resultMessage .. table.concat(winners, ", ")
         
         -- Use consistent channel for announcements
-        if self.isHost then
-            local chatChannel = IsInRaid() and "RAID_WARNING" or "PARTY"
-            SendChatMessage(resultMessage, chatChannel)
-        end
+        local chatChannel = IsInRaid() and "RAID_WARNING" or "PARTY"
+        SendChatMessage(resultMessage, chatChannel)
     end
+
+    -- Final UI update
+    self:UpdateUI(true)
 end
 
 -- Join a roll with selected priority
 function PL:JoinRoll(priority)
     if not self.sessionActive then return end
     
-    -- Store priority locally (don't broadcast priority)
-    self.playerPriority = priority
-    
-    -- Check if already joined
-    local alreadyJoined = false
-    for _, data in ipairs(self.participants) do
-        if self:NormalizeName(data.name) == self:NormalizeName(self.playerFullName) then
-            alreadyJoined = true
-            break
-        end
+    -- Ensure we have an ID or request one
+    if not self.playerID then
+        self:RequestPlayerID()
     end
     
-    -- Add to participants list or update existing entry
-    local playerEntry = nil
-    for i, data in ipairs(self.participants) do
-        if self:NormalizeName(data.name) == self:NormalizeName(self.playerFullName) then
-            playerEntry = data
-            break
-        end
-    end
-    
-    -- If not found, add player to list and broadcast join
-    if not playerEntry then
-        table.insert(self.participants, {
-            name = self.playerFullName, 
-            priority = priority -- For our own display only
-        })
-        
-        -- Broadcast that we joined, but not our priority
-        self:JoinRollWithoutPriority()
-    end
+    -- Update player's priority (whether joining fresh or changing)
+    self:UpdatePlayerPriority(priority)
     
     -- Highlight the selected button
     for i = 1, 19 do
@@ -593,14 +582,11 @@ function PL:JoinRoll(priority)
     end
     
     -- Print message based on whether this is a change or initial join
-    if alreadyJoined then
+    if self:HasPlayerJoined(self.playerFullName) then
         print("|cff00ff00You changed your priority to " .. priority .. ".|r")
     else
         print("|cff00ff00You joined the roll with priority " .. priority .. ".|r")
     end
-    
-    -- Update UI
-    self:UpdateUI()
 end
 
 -- Check if player has already joined
@@ -614,26 +600,10 @@ function PL:HasPlayerJoined(name)
     return false
 end
 
--- Get priority display value based on whether it's the current player or roll is finished
-function PL:GetPriorityDisplay(participant)
-    -- If it's current player, always show the priority
-    if self:NormalizeName(participant.name) == self:NormalizeName(self.playerFullName) then
-        return tostring(participant.priority or "?")
-    end
-    
-    -- If we're in results collection or session is over, show priority if we have it
-    if not self.sessionActive or self.collectingResults then
-        return tostring(participant.priority or "?")
-    end
-    
-    -- Otherwise during active session, show ? for other players
-    return "?"
-end
-
 -- Handle addon communication
 function PL:OnCommReceived(prefix, message, distribution, sender)
     if prefix ~= self.COMM_PREFIX then return end
-    
+
     -- Normalize the sender name for consistent comparison
     local normalizedSender = self:NormalizeName(sender)
     local normalizedPlayer = self:NormalizeName(self.playerFullName)
@@ -642,9 +612,7 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
         if message:find(self.COMM_START) == 1 then
             -- Someone started a roll session
             self.sessionActive = true
-            self.collectingResults = false
-            self.prioritiesReceived = {}
-            
+
             -- Show the window for all players when a session starts
             self.PriorityLootFrame:Show()
 
@@ -652,6 +620,14 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
             self.sessionHost = sender
             self.participants = {}
             self.playerPriority = nil -- Reset player's priority
+            
+            -- Reset ID maps for new session
+            self.playerIDMap = {}
+            self.idToPlayerMap = {}
+            self.playerID = nil
+            
+            -- Request an ID from the host
+            self:RequestPlayerID()
             
             -- Don't try to parse item from START message
             -- Item will come in a separate ITEM message
@@ -673,7 +649,7 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
                 print("|cff00ff00" .. self:GetDisplayName(sender) .. " shared item: " .. itemLink .. ".|r")
             end
         
-        elseif message:find(self.COMM_CLEAR) then
+        elseif message == self.COMM_CLEAR then
             -- Host has cleared the item, clear it for everyone
             print("|cffff9900Item cleared by " .. self:GetDisplayName(sender) .. ".|r")
             
@@ -685,24 +661,50 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
             self:UpdateUI()
             
         elseif message:find(self.COMM_JOIN) == 1 then
-            -- Someone joined the roll (without priority)
+            -- Someone joined the roll or changed their priority
             local parts = {strsplit(":", message)}
             if parts[2] then
-                local joiningPlayer = parts[2]
-                
-                -- Only add if not already in list
-                local existingEntry = nil
-                for i, data in ipairs(self.participants) do
-                    if self:NormalizeName(data.name) == self:NormalizeName(joiningPlayer) then
-                        existingEntry = data
-                        break
+                local joinData = {strsplit(",", parts[2])}
+                if joinData[1] and joinData[2] then
+                    local name = joinData[1]
+                    local priority = tonumber(joinData[2])
+                    local id = tonumber(joinData[3]) -- ID might be present
+                    
+                    -- If ID is present, update our mapping
+                    if id then
+                        self.playerIDMap[self:NormalizeName(name)] = id
+                        self.idToPlayerMap[id] = self:NormalizeName(name)
                     end
-                end
-                
-                if not existingEntry then
-                    -- New participant (no priority yet)
-                    table.insert(self.participants, {name = joiningPlayer})
-                    print("|cff00ff00" .. self:GetDisplayName(joiningPlayer) .. " joined the roll.|r")
+                    
+                    -- Check if this is the current player
+                    if self:NormalizeName(name) == normalizedPlayer then
+                        self.playerPriority = priority
+                        if id then self.playerID = id end
+                    end
+                    
+                    -- Add or update participant in the list
+                    local existingEntry = nil
+                    for i, data in ipairs(self.participants) do
+                        if self:NormalizeName(data.name) == self:NormalizeName(name) then
+                            data.priority = priority
+                            if id then data.id = id end
+                            existingEntry = data
+                            break
+                        end
+                    end
+                    
+                    if not existingEntry then
+                        -- New participant
+                        table.insert(self.participants, {
+                            name = name, 
+                            priority = priority,
+                            id = id
+                        })
+                        print("|cff00ff00" .. self:GetDisplayName(name) .. " joined the roll.|r")
+                    else
+                        -- Existing participant changed priority
+                        print("|cff00ff00" .. self:GetDisplayName(name) .. " changed priority.|r")
+                    end
                     
                     self:UpdateUI()
                 end
@@ -712,14 +714,32 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
             -- Someone left the roll
             local parts = {strsplit(":", message)}
             if parts[2] then
-                local leavingPlayer = parts[2]
+                local leavingData = parts[2]
+                local id = tonumber(leavingData)
                 
-                -- Remove player from participants list
-                for i, data in ipairs(self.participants) do
-                    if self:NormalizeName(data.name) == self:NormalizeName(leavingPlayer) then
-                        table.remove(self.participants, i)
-                        print("|cffff9900" .. self:GetDisplayName(leavingPlayer) .. " left the roll.|r")
-                        break
+                if id then
+                    -- Handle leaving by ID
+                    local leavingPlayer = self:GetPlayerNameFromID(id)
+                    if leavingPlayer then
+                        -- Remove player from participants list by ID
+                        for i, data in ipairs(self.participants) do
+                            if data.id == id then
+                                table.remove(self.participants, i)
+                                print("|cffff9900" .. self:GetDisplayName(leavingPlayer) .. " left the roll.|r")
+                                break
+                            end
+                        end
+                    end
+                else
+                    -- Handle leaving by name (legacy support)
+                    local leavingPlayer = leavingData
+                    -- Remove player from participants list
+                    for i, data in ipairs(self.participants) do
+                        if self:NormalizeName(data.name) == self:NormalizeName(leavingPlayer) then
+                            table.remove(self.participants, i)
+                            print("|cffff9900" .. self:GetDisplayName(leavingPlayer) .. " left the roll.|r")
+                            break
+                        end
                     end
                 end
                 
@@ -737,59 +757,105 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
                 end
             end
             
-        elseif message:find(self.COMM_PRIORITY) == 1 then
-            -- Priority submitted from a player
+        elseif message:find(self.COMM_ID_ASSIGN) == 1 then
+            -- ID assignment from host
             local parts = {strsplit(":", message)}
             if parts[2] then
-                local priorityData = {strsplit(",", parts[2])}
-                if priorityData[1] and priorityData[2] then
-                    local playerName = priorityData[1]
-                    local priority = tonumber(priorityData[2])
+                local idData = {strsplit(",", parts[2])}
+                if idData[1] and idData[2] then
+                    local playerName = idData[1]
+                    local id = tonumber(idData[2])
                     
-                    -- Track that we've received this player's priority
-                    self.prioritiesReceived[self:NormalizeName(playerName)] = true
+                    -- Store mapping
+                    self.playerIDMap[self:NormalizeName(playerName)] = id
+                    self.idToPlayerMap[id] = self:NormalizeName(playerName)
                     
-                    -- Update participant priority
+                    -- If this is for current player, store ID
+                    if self:NormalizeName(playerName) == normalizedPlayer then
+                        self.playerID = id
+                        
+                        -- If we've already set a priority, re-broadcast with our ID
+                        if self.playerPriority then
+                            self:UpdatePlayerPriority(self.playerPriority)
+                        end
+                    end
+                    
+                    -- Update any existing participant entries
                     for i, data in ipairs(self.participants) do
                         if self:NormalizeName(data.name) == self:NormalizeName(playerName) then
-                            data.priority = priority
+                            data.id = id
                             break
                         end
                     end
                     
-                    -- Sort participants by priority (lower is better)
-                    table.sort(self.participants, function(a, b)
-                        -- If either one has no priority, sort them to the end
-                        if not a.priority then return false end
-                        if not b.priority then return true end
-                        return a.priority < b.priority
-                    end)
-
                     self:UpdateUI()
                 end
             end
             
-        elseif message:find(self.COMM_STOP) then
-            -- Host is stopping the session, broadcast our priority
-            self.sessionActive = false
-            self.prioritiesReceived = {} -- Reset tracking
+        elseif message:find(self.COMM_ID_REQUEST) == 1 then
+            -- ID request from a player
+            if not self.isHost then return end
             
+            local parts = {strsplit(":", message)}
+            if parts[2] then
+                local requestingPlayer = parts[2]
+                
+                -- Assign an ID to the requesting player
+                self:AssignPlayerID(requestingPlayer)
+            end
+            
+        elseif message:find(self.COMM_STOP) == 1 then
+            -- Session ended with results
+            self.sessionActive = false
+
             -- Stop the timer if active
             if self.timerActive then
                 self:StopTimer()
             end
             
-			if self.playerPriority then
-				print("|cffff9900Roll session ended by " .. self:GetDisplayName(sender) .. ". Sending priority...|r")
-				
-				-- Broadcast our final priority
-				self:BroadcastFinalPriority()
-		    end
+            -- Parse participant list with IDs and priorities
+            -- Keep existing participant list but update priorities based on IDs
+            local rollResults = {}
+            local parts = {strsplit(":", message)}
+            for i = 2, #parts do
+                local idPriority = {strsplit(",", parts[i])}
+                if idPriority[1] and idPriority[2] then
+                    local id = tonumber(idPriority[1])
+                    local priority = tonumber(idPriority[2])
+                    
+                    -- Look up player name by ID
+                    local playerName = self:GetPlayerNameFromID(id)
+                    
+                    if playerName then
+                        rollResults[id] = {
+                            name = playerName,
+                            priority = priority,
+                            id = id
+                        }
+                    end
+                end
+            end
+            
+            -- Update participant list with new results
+            for i, data in ipairs(self.participants) do
+                if data.id and rollResults[data.id] then
+                    data.priority = rollResults[data.id].priority
+                end
+            end
+            
+            -- Sort participants by priority (lower is better)
+            table.sort(self.participants, function(a, b)
+                return a.priority < b.priority
+            end)
+            
+            print("|cffff9900Roll session ended by " .. self:GetDisplayName(sender) .. ". Results are displayed.|r")
+            
+            -- Important: We no longer clear the item on roll end
+            -- The item remains displayed until cleared manually or a new roll starts
             
             self:UpdateUI()
         end
     end
-	print("|cffff9900MESSAGE!.|r")
 end
 
 -- Define slash command handler
@@ -815,9 +881,9 @@ end
 -- Initialize the addon
 local function OnEvent(self, event, ...)
     if event == "ADDON_LOADED" and ... == addonName then
-        -- Register comm prefix with proper method
+        -- Register comm prefix
         PL:RegisterComm(PL.COMM_PREFIX, function(prefix, message, distribution, sender)
-            PL:OnCommReceived(prefix, message, distribution, sender)
+        PL:OnCommReceived(prefix, message, distribution, sender)
         end)
         
         -- Get player's full name (with server)
