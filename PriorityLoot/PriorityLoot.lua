@@ -176,7 +176,6 @@ end
 
 -- Broadcast player's priority only at the end of roll
 function PL:BroadcastFinalPriority()
-    if not self.sessionActive and not self.collectingResults then return end
     if not self.playerPriority then return end
     
     PL:SendCommMessage(self.COMM_PREFIX, self.COMM_PRIORITY .. ":" .. self.playerFullName .. "," .. self.playerPriority, self:GetDistributionChannel())
@@ -749,10 +748,15 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
                         end
                     end
                     
-                    -- If we're the host and collecting results, update UI
-                    if (self.isHost or not self.sessionActive) and self.collectingResults then
-                        self:UpdateUI()
-                    end
+                    -- Sort participants by priority (lower is better)
+                    table.sort(self.participants, function(a, b)
+                        -- If either one has no priority, sort them to the end
+                        if not a.priority then return false end
+                        if not b.priority then return true end
+                        return a.priority < b.priority
+                    end)
+
+                    self:UpdateUI()
                 end
             end
             
