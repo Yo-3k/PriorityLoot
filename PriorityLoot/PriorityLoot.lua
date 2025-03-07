@@ -124,7 +124,7 @@ end
 function PL:BroadcastTimerInfo(remainingTime)
     if not self.isHost then return end
     
-    C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, self.COMM_TIMER .. ":" .. remainingTime, self:GetDistributionChannel())
+    AceComm:SendCommMessage(self.COMM_PREFIX, self.COMM_TIMER .. ":" .. remainingTime, self:GetDistributionChannel())
 end
 
 -- Get class color for a player
@@ -189,7 +189,7 @@ function PL:UpdatePlayerPriority(newPriority)
     end
     
     -- Broadcast join message with updated priority
-    C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, self.COMM_JOIN .. ":" .. self.playerFullName .. "," .. newPriority, self:GetDistributionChannel())
+    AceComm:SendCommMessage(self.COMM_PREFIX, self.COMM_JOIN .. ":" .. self.playerFullName .. "," .. newPriority, self:GetDistributionChannel())
     
     -- Update UI
     self:UpdateUI()
@@ -217,7 +217,7 @@ function PL:ClearPlayerRoll()
     self.playerPriority = nil
     
     -- Broadcast removal to all raid members
-    C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, self.COMM_LEAVE .. ":" .. self.playerFullName, self:GetDistributionChannel())
+    AceComm:SendCommMessage(self.COMM_PREFIX, self.COMM_LEAVE .. ":" .. self.playerFullName, self:GetDistributionChannel())
     
     print("|cffff9900You have removed yourself from the roll.|r")
     
@@ -301,7 +301,7 @@ function PL:SetCurrentItem(itemLink)
     -- Broadcast item to other players if you're the host
     if self:IsMasterLooter() then        
         -- Use a specific message format that won't break item links
-        C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, self.COMM_ITEM .. ":" .. itemLink, self:GetDistributionChannel())
+        AceComm:SendCommMessage(self.COMM_PREFIX, self.COMM_ITEM .. ":" .. itemLink, self:GetDistributionChannel())
     end
     
     -- Update UI
@@ -313,7 +313,7 @@ function PL:ClearCurrentItem()
     -- Only broadcast if we're the host and there's an item to clear
     if self:IsMasterLooter() and self.currentLootItemLink then
         -- Broadcast clear item command
-        C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, self.COMM_CLEAR, self:GetDistributionChannel())
+        AceComm:SendCommMessage(self.COMM_PREFIX, self.COMM_CLEAR, self:GetDistributionChannel())
         print("|cffff9900Item cleared.|r")
     end
     
@@ -350,12 +350,12 @@ function PL:StartRollSession()
     self:UpdateUI(true)
     
     -- Broadcast start message - send item link in a separate message to ensure it's intact
-    C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, self.COMM_START, self:GetDistributionChannel())
+    CAceComm:SendCommMessage(self.COMM_PREFIX, self.COMM_START, self:GetDistributionChannel())
     
     -- Send item link as a separate message if available
     if self.currentLootItemLink then
         -- Share item again just to be sure
-        C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, self.COMM_ITEM .. ":" .. self.currentLootItemLink, self:GetDistributionChannel())
+        AceComm:SendCommMessage(self.COMM_PREFIX, self.COMM_ITEM .. ":" .. self.currentLootItemLink, self:GetDistributionChannel())
         
         -- Show raid warning with item
         local message = "Roll started for " .. self.currentLootItemLink
@@ -417,7 +417,7 @@ function PL:StopRollSession()
         message = message .. ":" .. data.name .. "," .. data.priority
     end
     
-    C_ChatInfo.SendAddonMessage(self.COMM_PREFIX, message, self:GetDistributionChannel())
+    AceComm:SendCommMessage(self.COMM_PREFIX, message, self:GetDistributionChannel())
     
     print("|cffff9900Roll session ended. Results are displayed.|r")
     
@@ -676,7 +676,7 @@ end
 local function OnEvent(self, event, ...)
     if event == "ADDON_LOADED" and ... == addonName then
         -- Register comm prefix
-        C_ChatInfo.RegisterAddonMessagePrefix(PL.COMM_PREFIX)
+        AceComm:RegisterComm(PL.COMM_PREFIX)
         
         -- Get player's full name (with server)
         PL.playerFullName = PL:GetPlayerFullName()
@@ -686,8 +686,6 @@ local function OnEvent(self, event, ...)
     elseif event == "PLAYER_ENTERING_WORLD" then
         -- Get player's full name (with server) when entering world
         PL.playerFullName = PL:GetPlayerFullName()
-    elseif event == "CHAT_MSG_ADDON" then
-        PL:OnCommReceived(...)
     elseif event == "GROUP_ROSTER_UPDATE" or event == "PARTY_LOOT_METHOD_CHANGED" then
         if PL.initialized then
             PL:UpdateUI()
@@ -703,7 +701,6 @@ SlashCmdList["PRIORITYLOOT"] = function(msg) PL:SlashCommandHandler(msg) end
 -- Create and register events frame
 local eventFrame = CreateFrame("Frame")
 eventFrame:RegisterEvent("ADDON_LOADED")
-eventFrame:RegisterEvent("CHAT_MSG_ADDON")
 eventFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
 eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
 eventFrame:RegisterEvent("PARTY_LOOT_METHOD_CHANGED")

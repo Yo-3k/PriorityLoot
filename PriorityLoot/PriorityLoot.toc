@@ -2,9 +2,10 @@
 ## Title: PriorityLoot
 ## Notes: Priority-based loot distribution system for raids
 ## Author: Yo3k
-## Version: 1.0.0
+## Version: 0.1
 ## SavedVariables: PriorityLootDB
 ## DefaultState: enabled
 
+embeds.xml
 PriorityLoot.lua
 PriorityLootUI.lua
