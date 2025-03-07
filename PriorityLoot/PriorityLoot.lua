@@ -26,6 +26,12 @@ PL.timerEndTime = 0
 PL.timerFrame = nil
 PL.playerPriority = nil -- Track current player's selected priority
 
+-- Player ID system
+PL.playerIDMap = {} -- Maps player names to IDs
+PL.idToPlayerMap = {} -- Maps IDs to player names
+PL.playerID = nil -- Current player's ID
+PL.nextAvailableID = 1 -- Start IDs from 1 (0-99 possible)
+
 -- Item tracking variables
 PL.currentLootItemLink = nil
 PL.currentLootItemTexture = nil
@@ -39,6 +45,8 @@ PL.COMM_TIMER = "TIMER" -- For timer sync
 PL.COMM_LEAVE = "LEAVE" -- For removing player from roll
 PL.COMM_ITEM = "ITEM"   -- For sharing item data
 PL.COMM_CLEAR = "CLEAR" -- For clearing item data
+PL.COMM_ID_ASSIGN = "IDA" -- For assigning player IDs
+PL.COMM_ID_REQUEST = "IDR" -- For requesting an ID
 
 -- Class colors table
 PL.CLASS_COLORS = {
@@ -171,10 +179,72 @@ function PL:GetClassColor(name)
     return defaultColor
 end
 
+-- Assign a unique ID to a player (host only)
+function PL:AssignPlayerID(playerName)
+    if not self.isHost then return nil end
+    
+    -- Normalize player name for consistent keys
+    local normalizedName = self:NormalizeName(playerName)
+    
+    -- Return existing ID if already assigned
+    if self.playerIDMap[normalizedName] then
+        return self.playerIDMap[normalizedName]
+    end
+    
+    -- Assign new ID (using modulo to keep it within 0-99)
+    local newID = self.nextAvailableID % 100
+    self.nextAvailableID = self.nextAvailableID + 1
+    
+    -- Store mappings
+    self.playerIDMap[normalizedName] = newID
+    self.idToPlayerMap[newID] = normalizedName
+    
+    -- Broadcast ID assignment to all players
+    ace:SendCommMessage(self.COMM_PREFIX, self.COMM_ID_ASSIGN .. ":" .. normalizedName .. "," .. newID, self:GetDistributionChannel())
+    
+    return newID
+end
+
+-- Request an ID from the host
+function PL:RequestPlayerID()
+    if self.isHost then
+        -- If we're the host, just assign ourselves an ID
+        self.playerID = self:AssignPlayerID(self.playerFullName)
+    else
+        -- Request ID from host
+        ace:SendCommMessage(self.COMM_PREFIX, self.COMM_ID_REQUEST .. ":" .. self.playerFullName, self:GetDistributionChannel())
+    end
+end
+
+-- Get player ID (requesting one if needed)
+function PL:GetPlayerID(playerName)
+    local normalizedName = self:NormalizeName(playerName or self.playerFullName)
+    
+    -- Try to get existing ID
+    local id = self.playerIDMap[normalizedName]
+    
+    -- If no ID and we're the host, assign one
+    if not id and self.isHost then
+        id = self:AssignPlayerID(normalizedName)
+    end
+    
+    return id
+end
+
+-- Get player name from ID
+function PL:GetPlayerNameFromID(id)
+    return self.idToPlayerMap[id]
+end
+
 -- Update player's priority in the participants list
 function PL:UpdatePlayerPriority(newPriority)
     -- Store player's priority locally
     self.playerPriority = newPriority
+    
+    -- Ensure player has an ID
+    if not self.playerID then
+        self:RequestPlayerID()
+    end
     
     -- Find and update player in participants list
     local playerEntry = nil
@@ -182,17 +252,27 @@ function PL:UpdatePlayerPriority(newPriority)
         if self:NormalizeName(data.name) == self:NormalizeName(self.playerFullName) then
             playerEntry = data
             playerEntry.priority = newPriority
+            playerEntry.id = self.playerID
             break
         end
     end
     
     -- If not found, add player to list
     if not playerEntry then
-        table.insert(self.participants, {name = self.playerFullName, priority = newPriority})
+        table.insert(self.participants, {
+            name = self.playerFullName, 
+            priority = newPriority,
+            id = self.playerID
+        })
     end
     
-    -- Broadcast join message with updated priority
-    ace:SendCommMessage(self.COMM_PREFIX, self.COMM_JOIN .. ":" .. self.playerFullName .. "," .. newPriority, self:GetDistributionChannel())
+    -- Broadcast join message with updated priority and ID
+    if self.playerID then
+        ace:SendCommMessage(self.COMM_PREFIX, self.COMM_JOIN .. ":" .. self.playerFullName .. "," .. newPriority .. "," .. self.playerID, self:GetDistributionChannel())
+    else
+        -- No ID yet, broadcast without ID (it will be updated once ID is assigned)
+        ace:SendCommMessage(self.COMM_PREFIX, self.COMM_JOIN .. ":" .. self.playerFullName .. "," .. newPriority, self:GetDistributionChannel())
+    end
     
     -- Update UI
     self:UpdateUI()
@@ -219,8 +299,12 @@ function PL:ClearPlayerRoll()
     -- Reset player's priority
     self.playerPriority = nil
     
-    -- Broadcast removal to all raid members
-    ace:SendCommMessage(self.COMM_PREFIX, self.COMM_LEAVE .. ":" .. self.playerFullName, self:GetDistributionChannel())
+    -- Broadcast removal to all raid members (using ID if available)
+    if self.playerID then
+        ace:SendCommMessage(self.COMM_PREFIX, self.COMM_LEAVE .. ":" .. self.playerID, self:GetDistributionChannel())
+    else
+        ace:SendCommMessage(self.COMM_PREFIX, self.COMM_LEAVE .. ":" .. self.playerFullName, self:GetDistributionChannel())
+    end
     
     print("|cffff9900You have removed yourself from the roll.|r")
     
@@ -349,6 +433,14 @@ function PL:StartRollSession()
     self.participants = {}
     self.playerPriority = nil -- Reset player's priority
     
+    -- Reset ID system for new session
+    self.playerIDMap = {}
+    self.idToPlayerMap = {}
+    self.nextAvailableID = 1
+    
+    -- Assign ourselves an ID as host
+    self.playerID = self:AssignPlayerID(self.playerFullName)
+    
     -- Update UI immediately to reflect state change
     self:UpdateUI(true)
     
@@ -414,10 +506,12 @@ function PL:StopRollSession()
     -- Update UI immediately to reflect state change
     self:UpdateUI(true)
     
-    -- Broadcast stop message with participant list
+    -- Broadcast stop message with participant IDs and priorities (compact format)
     local message = self.COMM_STOP
     for i, data in ipairs(self.participants) do
-        message = message .. ":" .. data.name .. "," .. data.priority
+        if data.id then -- Only include participants with valid IDs
+            message = message .. ":" .. data.id .. "," .. data.priority
+        end
     end
     
     ace:SendCommMessage(self.COMM_PREFIX, message, self:GetDistributionChannel())
@@ -466,6 +560,11 @@ end
 -- Join a roll with selected priority
 function PL:JoinRoll(priority)
     if not self.sessionActive then return end
+    
+    -- Ensure we have an ID or request one
+    if not self.playerID then
+        self:RequestPlayerID()
+    end
     
     -- Update player's priority (whether joining fresh or changing)
     self:UpdatePlayerPriority(priority)
@@ -521,6 +620,14 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
             self.participants = {}
             self.playerPriority = nil -- Reset player's priority
             
+            -- Reset ID maps for new session
+            self.playerIDMap = {}
+            self.idToPlayerMap = {}
+            self.playerID = nil
+            
+            -- Request an ID from the host
+            self:RequestPlayerID()
+            
             -- Don't try to parse item from START message
             -- Item will come in a separate ITEM message
             print("|cff00ff00" .. self:GetDisplayName(sender) .. " started a roll session.|r")
@@ -556,14 +663,22 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
             -- Someone joined the roll or changed their priority
             local parts = {strsplit(":", message)}
             if parts[2] then
-                local namePriority = {strsplit(",", parts[2])}
-                if namePriority[1] and namePriority[2] then
-                    local name = namePriority[1]
-                    local priority = tonumber(namePriority[2])
+                local joinData = {strsplit(",", parts[2])}
+                if joinData[1] and joinData[2] then
+                    local name = joinData[1]
+                    local priority = tonumber(joinData[2])
+                    local id = tonumber(joinData[3]) -- ID might be present
+                    
+                    -- If ID is present, update our mapping
+                    if id then
+                        self.playerIDMap[self:NormalizeName(name)] = id
+                        self.idToPlayerMap[id] = self:NormalizeName(name)
+                    end
                     
                     -- Check if this is the current player
                     if self:NormalizeName(name) == normalizedPlayer then
                         self.playerPriority = priority
+                        if id then self.playerID = id end
                     end
                     
                     -- Add or update participant in the list
@@ -571,6 +686,7 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
                     for i, data in ipairs(self.participants) do
                         if self:NormalizeName(data.name) == self:NormalizeName(name) then
                             data.priority = priority
+                            if id then data.id = id end
                             existingEntry = data
                             break
                         end
@@ -578,7 +694,11 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
                     
                     if not existingEntry then
                         -- New participant
-                        table.insert(self.participants, {name = name, priority = priority})
+                        table.insert(self.participants, {
+                            name = name, 
+                            priority = priority,
+                            id = id
+                        })
                         print("|cff00ff00" .. self:GetDisplayName(name) .. " joined the roll.|r")
                     else
                         -- Existing participant changed priority
@@ -593,14 +713,32 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
             -- Someone left the roll
             local parts = {strsplit(":", message)}
             if parts[2] then
-                local leavingPlayer = parts[2]
+                local leavingData = parts[2]
+                local id = tonumber(leavingData)
                 
-                -- Remove player from participants list
-                for i, data in ipairs(self.participants) do
-                    if self:NormalizeName(data.name) == self:NormalizeName(leavingPlayer) then
-                        table.remove(self.participants, i)
-                        print("|cffff9900" .. self:GetDisplayName(leavingPlayer) .. " left the roll.|r")
-                        break
+                if id then
+                    -- Handle leaving by ID
+                    local leavingPlayer = self:GetPlayerNameFromID(id)
+                    if leavingPlayer then
+                        -- Remove player from participants list by ID
+                        for i, data in ipairs(self.participants) do
+                            if data.id == id then
+                                table.remove(self.participants, i)
+                                print("|cffff9900" .. self:GetDisplayName(leavingPlayer) .. " left the roll.|r")
+                                break
+                            end
+                        end
+                    end
+                else
+                    -- Handle leaving by name (legacy support)
+                    local leavingPlayer = leavingData
+                    -- Remove player from participants list
+                    for i, data in ipairs(self.participants) do
+                        if self:NormalizeName(data.name) == self:NormalizeName(leavingPlayer) then
+                            table.remove(self.participants, i)
+                            print("|cffff9900" .. self:GetDisplayName(leavingPlayer) .. " left the roll.|r")
+                            break
+                        end
                     end
                 end
                 
@@ -618,6 +756,53 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
                 end
             end
             
+        elseif message:find(self.COMM_ID_ASSIGN) == 1 then
+            -- ID assignment from host
+            local parts = {strsplit(":", message)}
+            if parts[2] then
+                local idData = {strsplit(",", parts[2])}
+                if idData[1] and idData[2] then
+                    local playerName = idData[1]
+                    local id = tonumber(idData[2])
+                    
+                    -- Store mapping
+                    self.playerIDMap[self:NormalizeName(playerName)] = id
+                    self.idToPlayerMap[id] = self:NormalizeName(playerName)
+                    
+                    -- If this is for current player, store ID
+                    if self:NormalizeName(playerName) == normalizedPlayer then
+                        self.playerID = id
+                        
+                        -- If we've already set a priority, re-broadcast with our ID
+                        if self.playerPriority then
+                            self:UpdatePlayerPriority(self.playerPriority)
+                        end
+                    end
+                    
+                    -- Update any existing participant entries
+                    for i, data in ipairs(self.participants) do
+                        if self:NormalizeName(data.name) == self:NormalizeName(playerName) then
+                            data.id = id
+                            break
+                        end
+                    end
+                    
+                    self:UpdateUI()
+                end
+            end
+            
+        elseif message:find(self.COMM_ID_REQUEST) == 1 then
+            -- ID request from a player
+            if not self.isHost then return end
+            
+            local parts = {strsplit(":", message)}
+            if parts[2] then
+                local requestingPlayer = parts[2]
+                
+                -- Assign an ID to the requesting player
+                self:AssignPlayerID(requestingPlayer)
+            end
+            
         elseif message:find(self.COMM_STOP) == 1 then
             -- Session ended with results
             self.sessionActive = false
@@ -627,16 +812,33 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
                 self:StopTimer()
             end
             
-            -- Parse participant list with priorities
-            self.participants = {}
+            -- Parse participant list with IDs and priorities
+            -- Keep existing participant list but update priorities based on IDs
+            local rollResults = {}
             local parts = {strsplit(":", message)}
             for i = 2, #parts do
-                local namePriority = {strsplit(",", parts[i])}
-                if namePriority[1] and namePriority[2] then
-                    table.insert(self.participants, {
-                        name = namePriority[1],
-                        priority = tonumber(namePriority[2])
-                    })
+                local idPriority = {strsplit(",", parts[i])}
+                if idPriority[1] and idPriority[2] then
+                    local id = tonumber(idPriority[1])
+                    local priority = tonumber(idPriority[2])
+                    
+                    -- Look up player name by ID
+                    local playerName = self:GetPlayerNameFromID(id)
+                    
+                    if playerName then
+                        rollResults[id] = {
+                            name = playerName,
+                            priority = priority,
+                            id = id
+                        }
+                    end
+                end
+            end
+            
+            -- Update participant list with new results
+            for i, data in ipairs(self.participants) do
+                if data.id and rollResults[data.id] then
+                    data.priority = rollResults[data.id].priority
                 end
             end
             
