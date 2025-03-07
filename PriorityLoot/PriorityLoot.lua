@@ -434,6 +434,7 @@ function PL:CheckAllPrioritiesReceived()
     
     local allReceived = true
     local missingCount = 0
+    local missingPlayers = {}
     
     -- Count how many participants are missing priorities
     for _, participant in ipairs(self.participants) do
@@ -441,10 +442,12 @@ function PL:CheckAllPrioritiesReceived()
         if not self.prioritiesReceived[normalizedName] then
             allReceived = false
             missingCount = missingCount + 1
+            table.insert(missingPlayers, self:GetDisplayName(participant.name))
         end
     end
     
-    if allReceived then
+    -- If there are no participants or all priorities received, finalize results
+    if #self.participants == 0 or allReceived then
         -- All priorities received, finalize results
         self.collectingResults = false
         
@@ -456,19 +459,25 @@ function PL:CheckAllPrioritiesReceived()
             return a.priority < b.priority
         end)
         
-        -- Display raid warning with results
-        self:AnnounceResults()
+        -- Display raid warning with results (only if host)
+        if self.isHost then
+            self:AnnounceResults()
+        end
         
         -- Final UI update
         self:UpdateUI(true)
         
-        print("|cff00ff00All priorities received. Results finalized.|r")
+        if self.isHost then
+            print("|cff00ff00All priorities received. Results finalized.|r")
+        end
     else
         -- Still waiting for some priorities
-        if missingCount == 1 then
-            print("|cffff9900Waiting for 1 player to submit their priority...|r")
-        else
-            print("|cffff9900Waiting for " .. missingCount .. " players to submit their priorities...|r")
+        if self.isHost then
+            if missingCount == 1 then
+                print("|cffff9900Waiting for " .. missingPlayers[1] .. " to submit their priority...|r")
+            else
+                print("|cffff9900Waiting for " .. missingCount .. " players to submit their priorities: " .. table.concat(missingPlayers, ", ") .. "|r")
+            end
         end
     end
 end
