@@ -673,7 +673,7 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
                 print("|cff00ff00" .. self:GetDisplayName(sender) .. " shared item: " .. itemLink .. ".|r")
             end
         
-        elseif message == self.COMM_CLEAR then
+        elseif message:find(self.COMM_CLEAR) then
             -- Host has cleared the item, clear it for everyone
             print("|cffff9900Item cleared by " .. self:GetDisplayName(sender) .. ".|r")
             
@@ -769,10 +769,9 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
                 end
             end
             
-        elseif message == self.COMM_STOP then
+        elseif message:find(self.COMM_STOP) then
             -- Host is stopping the session, broadcast our priority
             self.sessionActive = false
-            self.collectingResults = true
             self.prioritiesReceived = {} -- Reset tracking
             
             -- Stop the timer if active
@@ -780,12 +779,15 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
                 self:StopTimer()
             end
             
-            print("|cffff9900Roll session ended by " .. self:GetDisplayName(sender) .. ". Sending priority...|r")
-            
-            -- Broadcast our final priority
-            self:BroadcastFinalPriority()
+			if self.playerPriority
+				print("|cffff9900Roll session ended by " .. self:GetDisplayName(sender) .. ". Sending priority...|r")
+				
+				-- Broadcast our final priority
+				self:BroadcastFinalPriority()
+		    end
         end
     end
+	print("|cffff9900MESSAGE!.|r")
 end
 
 -- Define slash command handler
