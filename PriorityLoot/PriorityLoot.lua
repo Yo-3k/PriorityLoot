@@ -8,7 +8,8 @@ PL.version = "1.0.0"
 PL.interfaceVersion = 11506 -- Classic SoD
 
 -- Pull in AceComm
-local ace = LibStub("AceComm-3.0")
+LibStub("AceComm-3.0"):Embed(PL)
+
 
 -- Initialize variables
 PL.isHost = false
@@ -135,7 +136,7 @@ end
 function PL:BroadcastTimerInfo(remainingTime)
     if not self.isHost then return end
     
-    ace:SendCommMessage(self.COMM_PREFIX, self.COMM_TIMER .. ":" .. remainingTime, self:GetDistributionChannel())
+    PL:SendCommMessage(self.COMM_PREFIX, self.COMM_TIMER .. ":" .. remainingTime, self:GetDistributionChannel())
 end
 
 -- Get class color for a player
@@ -200,7 +201,7 @@ function PL:AssignPlayerID(playerName)
     self.idToPlayerMap[newID] = normalizedName
     
     -- Broadcast ID assignment to all players
-    ace:SendCommMessage(self.COMM_PREFIX, self.COMM_ID_ASSIGN .. ":" .. normalizedName .. "," .. newID, self:GetDistributionChannel())
+    PL:SendCommMessage(self.COMM_PREFIX, self.COMM_ID_ASSIGN .. ":" .. normalizedName .. "," .. newID, self:GetDistributionChannel())
     
     return newID
 end
@@ -212,7 +213,7 @@ function PL:RequestPlayerID()
         self.playerID = self:AssignPlayerID(self.playerFullName)
     else
         -- Request ID from host
-        ace:SendCommMessage(self.COMM_PREFIX, self.COMM_ID_REQUEST .. ":" .. self.playerFullName, self:GetDistributionChannel())
+        PL:SendCommMessage(self.COMM_PREFIX, self.COMM_ID_REQUEST .. ":" .. self.playerFullName, self:GetDistributionChannel())
     end
 end
 
@@ -268,10 +269,10 @@ function PL:UpdatePlayerPriority(newPriority)
     
     -- Broadcast join message with updated priority and ID
     if self.playerID then
-        ace:SendCommMessage(self.COMM_PREFIX, self.COMM_JOIN .. ":" .. self.playerFullName .. "," .. newPriority .. "," .. self.playerID, self:GetDistributionChannel())
+        PL:SendCommMessage(self.COMM_PREFIX, self.COMM_JOIN .. ":" .. self.playerFullName .. "," .. newPriority .. "," .. self.playerID, self:GetDistributionChannel())
     else
         -- No ID yet, broadcast without ID (it will be updated once ID is assigned)
-        ace:SendCommMessage(self.COMM_PREFIX, self.COMM_JOIN .. ":" .. self.playerFullName .. "," .. newPriority, self:GetDistributionChannel())
+        PL:SendCommMessage(self.COMM_PREFIX, self.COMM_JOIN .. ":" .. self.playerFullName .. "," .. newPriority, self:GetDistributionChannel())
     end
     
     -- Update UI
@@ -301,9 +302,9 @@ function PL:ClearPlayerRoll()
     
     -- Broadcast removal to all raid members (using ID if available)
     if self.playerID then
-        ace:SendCommMessage(self.COMM_PREFIX, self.COMM_LEAVE .. ":" .. self.playerID, self:GetDistributionChannel())
+        PL:SendCommMessage(self.COMM_PREFIX, self.COMM_LEAVE .. ":" .. self.playerID, self:GetDistributionChannel())
     else
-        ace:SendCommMessage(self.COMM_PREFIX, self.COMM_LEAVE .. ":" .. self.playerFullName, self:GetDistributionChannel())
+        PL:SendCommMessage(self.COMM_PREFIX, self.COMM_LEAVE .. ":" .. self.playerFullName, self:GetDistributionChannel())
     end
     
     print("|cffff9900You have removed yourself from the roll.|r")
@@ -388,7 +389,7 @@ function PL:SetCurrentItem(itemLink)
     -- Broadcast item to other players if you're the host
     if self:IsMasterLooter() then        
         -- Use a specific message format that won't break item links
-        ace:SendCommMessage(self.COMM_PREFIX, self.COMM_ITEM .. ":" .. itemLink, self:GetDistributionChannel())
+        PL:SendCommMessage(self.COMM_PREFIX, self.COMM_ITEM .. ":" .. itemLink, self:GetDistributionChannel())
     end
     
     -- Update UI
@@ -400,7 +401,7 @@ function PL:ClearCurrentItem()
     -- Only broadcast if we're the host and there's an item to clear
     if self:IsMasterLooter() and self.currentLootItemLink then
         -- Broadcast clear item command
-        ace:SendCommMessage(self.COMM_PREFIX, self.COMM_CLEAR, self:GetDistributionChannel())
+        PL:SendCommMessage(self.COMM_PREFIX, self.COMM_CLEAR, self:GetDistributionChannel())
         print("|cffff9900Item cleared.|r")
     end
     
@@ -443,14 +444,14 @@ function PL:StartRollSession()
     
     -- Update UI immediately to reflect state change
     self:UpdateUI(true)
-    
+
     -- Broadcast start message - send item link in a separate message to ensure it's intact
-    ace:SendCommMessage(self.COMM_PREFIX, self.COMM_START, self:GetDistributionChannel())
+    PL:SendCommMessage(self.COMM_PREFIX, self.COMM_START, self:GetDistributionChannel())
     
     -- Send item link as a separate message if available
     if self.currentLootItemLink then
         -- Share item again just to be sure
-        ace:SendCommMessage(self.COMM_PREFIX, self.COMM_ITEM .. ":" .. self.currentLootItemLink, self:GetDistributionChannel())
+        PL:SendCommMessage(self.COMM_PREFIX, self.COMM_ITEM .. ":" .. self.currentLootItemLink, self:GetDistributionChannel())
         
         -- Show raid warning with item
         local message = "Roll started for " .. self.currentLootItemLink
@@ -514,7 +515,7 @@ function PL:StopRollSession()
         end
     end
     
-    ace:SendCommMessage(self.COMM_PREFIX, message, self:GetDistributionChannel())
+    PL:SendCommMessage(self.COMM_PREFIX, message, self:GetDistributionChannel())
     
     print("|cffff9900Roll session ended. Results are displayed.|r")
     
@@ -602,7 +603,7 @@ end
 -- Handle addon communication
 function PL:OnCommReceived(prefix, message, distribution, sender)
     if prefix ~= self.COMM_PREFIX then return end
-    
+
     -- Normalize the sender name for consistent comparison
     local normalizedSender = self:NormalizeName(sender)
     local normalizedPlayer = self:NormalizeName(self.playerFullName)
@@ -611,7 +612,7 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
         if message:find(self.COMM_START) == 1 then
             -- Someone started a roll session
             self.sessionActive = true
-            
+
             -- Show the window for all players when a session starts
             self.PriorityLootFrame:Show()
 
@@ -881,7 +882,9 @@ end
 local function OnEvent(self, event, ...)
     if event == "ADDON_LOADED" and ... == addonName then
         -- Register comm prefix
-        ace:RegisterComm(PL.COMM_PREFIX,PL.OnCommReceived)
+        PL:RegisterComm(PL.COMM_PREFIX, function(prefix, message, distribution, sender)
+        PL:OnCommReceived(prefix, message, distribution, sender)
+        end)
         
         -- Get player's full name (with server)
         PL.playerFullName = PL:GetPlayerFullName()
