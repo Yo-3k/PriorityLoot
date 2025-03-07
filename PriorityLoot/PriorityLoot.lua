@@ -7,6 +7,9 @@ local addonName, PL = ...
 PL.version = "1.0.0"
 PL.interfaceVersion = 11506 -- Classic SoD
 
+-- Pull in AceComm
+local ace = LibStub("AceComm-3.0")
+
 -- Initialize variables
 PL.isHost = false
 PL.sessionActive = false
@@ -124,7 +127,7 @@ end
 function PL:BroadcastTimerInfo(remainingTime)
     if not self.isHost then return end
     
-    AceComm:SendCommMessage(self.COMM_PREFIX, self.COMM_TIMER .. ":" .. remainingTime, self:GetDistributionChannel())
+    ace:SendCommMessage(self.COMM_PREFIX, self.COMM_TIMER .. ":" .. remainingTime, self:GetDistributionChannel())
 end
 
 -- Get class color for a player
@@ -189,7 +192,7 @@ function PL:UpdatePlayerPriority(newPriority)
     end
     
     -- Broadcast join message with updated priority
-    AceComm:SendCommMessage(self.COMM_PREFIX, self.COMM_JOIN .. ":" .. self.playerFullName .. "," .. newPriority, self:GetDistributionChannel())
+    ace:SendCommMessage(self.COMM_PREFIX, self.COMM_JOIN .. ":" .. self.playerFullName .. "," .. newPriority, self:GetDistributionChannel())
     
     -- Update UI
     self:UpdateUI()
@@ -217,7 +220,7 @@ function PL:ClearPlayerRoll()
     self.playerPriority = nil
     
     -- Broadcast removal to all raid members
-    AceComm:SendCommMessage(self.COMM_PREFIX, self.COMM_LEAVE .. ":" .. self.playerFullName, self:GetDistributionChannel())
+    ace:SendCommMessage(self.COMM_PREFIX, self.COMM_LEAVE .. ":" .. self.playerFullName, self:GetDistributionChannel())
     
     print("|cffff9900You have removed yourself from the roll.|r")
     
@@ -301,7 +304,7 @@ function PL:SetCurrentItem(itemLink)
     -- Broadcast item to other players if you're the host
     if self:IsMasterLooter() then        
         -- Use a specific message format that won't break item links
-        AceComm:SendCommMessage(self.COMM_PREFIX, self.COMM_ITEM .. ":" .. itemLink, self:GetDistributionChannel())
+        ace:SendCommMessage(self.COMM_PREFIX, self.COMM_ITEM .. ":" .. itemLink, self:GetDistributionChannel())
     end
     
     -- Update UI
@@ -313,7 +316,7 @@ function PL:ClearCurrentItem()
     -- Only broadcast if we're the host and there's an item to clear
     if self:IsMasterLooter() and self.currentLootItemLink then
         -- Broadcast clear item command
-        AceComm:SendCommMessage(self.COMM_PREFIX, self.COMM_CLEAR, self:GetDistributionChannel())
+        ace:SendCommMessage(self.COMM_PREFIX, self.COMM_CLEAR, self:GetDistributionChannel())
         print("|cffff9900Item cleared.|r")
     end
     
@@ -350,12 +353,12 @@ function PL:StartRollSession()
     self:UpdateUI(true)
     
     -- Broadcast start message - send item link in a separate message to ensure it's intact
-    CAceComm:SendCommMessage(self.COMM_PREFIX, self.COMM_START, self:GetDistributionChannel())
+    ace:SendCommMessage(self.COMM_PREFIX, self.COMM_START, self:GetDistributionChannel())
     
     -- Send item link as a separate message if available
     if self.currentLootItemLink then
         -- Share item again just to be sure
-        AceComm:SendCommMessage(self.COMM_PREFIX, self.COMM_ITEM .. ":" .. self.currentLootItemLink, self:GetDistributionChannel())
+        ace:SendCommMessage(self.COMM_PREFIX, self.COMM_ITEM .. ":" .. self.currentLootItemLink, self:GetDistributionChannel())
         
         -- Show raid warning with item
         local message = "Roll started for " .. self.currentLootItemLink
@@ -417,7 +420,7 @@ function PL:StopRollSession()
         message = message .. ":" .. data.name .. "," .. data.priority
     end
     
-    AceComm:SendCommMessage(self.COMM_PREFIX, message, self:GetDistributionChannel())
+    ace:SendCommMessage(self.COMM_PREFIX, message, self:GetDistributionChannel())
     
     print("|cffff9900Roll session ended. Results are displayed.|r")
     
@@ -676,7 +679,7 @@ end
 local function OnEvent(self, event, ...)
     if event == "ADDON_LOADED" and ... == addonName then
         -- Register comm prefix
-        AceComm:RegisterComm(PL.COMM_PREFIX)
+        ace:RegisterComm(PL.COMM_PREFIX,PL.OnCommReceived)
         
         -- Get player's full name (with server)
         PL.playerFullName = PL:GetPlayerFullName()
