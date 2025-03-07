@@ -439,7 +439,7 @@ function PL:CheckAllPrioritiesReceived()
     -- Count how many participants are missing priorities
     for _, participant in ipairs(self.participants) do
         local normalizedName = self:NormalizeName(participant.name)
-        if not self.prioritiesReceived[normalizedName] then
+        if not self.prioritiesReceived[normalizedName] and not self.isHost then
             allReceived = false
             missingCount = missingCount + 1
             table.insert(missingPlayers, self:GetDisplayName(participant.name))
