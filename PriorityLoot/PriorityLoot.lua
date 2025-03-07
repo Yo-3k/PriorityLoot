@@ -893,11 +893,18 @@ local function OnEvent(self, event, ...)
         PL:OnCommReceived(prefix, message, distribution, sender)
         end)
 
-        if IsInRaid() then
-            PL.COMM_PREFIX_PLAYER = PL.commPrefixPlayerConst .. UnitInRaid("player")
-            PL:RegisterComm(PL.COMM_PREFIX_PLAYER, function(prefix, message, distribution, sender)
+        -- register channels for all members
+        for i = 1, 40 do
+		    PL:RegisterComm(PL.commPrefixPlayerConst .. tostring(i), function(prefix, message, distribution, sender)
                 PL:OnCommReceived(prefix, message, distribution, sender)
             end)
+            if i == 40 then
+                break
+            end
+        end
+
+        if IsInRaid() then
+            PL.COMM_PREFIX_PLAYER = PL.commPrefixPlayerConst .. UnitInRaid("player")
         end
 
         -- Get player's full name (with server)
@@ -910,11 +917,7 @@ local function OnEvent(self, event, ...)
         PL.playerFullName = PL:GetPlayerFullName()
     elseif event == "GROUP_ROSTER_UPDATE" or event == "PARTY_LOOT_METHOD_CHANGED" then
         if PL.initialized then
-		    local raidIndex = UnitInRaid("player")
             PL.COMM_PREFIX_PLAYER = PL.commPrefixPlayerConst .. UnitInRaid("player")
-            PL:RegisterComm(PL.COMM_PREFIX_PLAYER, function(prefix, message, distribution, sender)
-                PL:OnCommReceived(prefix, message, distribution, sender)
-            end)
             PL:UpdateUI()
         end
     end
