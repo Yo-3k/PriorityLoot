@@ -895,12 +895,13 @@ local function OnEvent(self, event, ...)
         PL:OnCommReceived(prefix, message, distribution, sender)
         end)
 
-        -- register channels for all members
-        for i = 1, PL.commPrefixChannels do
+        -- register channels for all members, we need the -1 because we later use modulo
+        -- to calculate the channel number
+        for i = 0, (PL.commPrefixChannels-1) do
 		    PL:RegisterComm(PL.commPrefixPlayerConst .. tostring(i), function(prefix, message, distribution, sender)
                 PL:OnCommReceived(prefix, message, distribution, sender)
             end)
-            if i == PL.commPrefixChannels then
+            if i == (PL.commPrefixChannels-1) then
                 break
             end
         end
