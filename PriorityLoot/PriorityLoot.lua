@@ -30,11 +30,8 @@ PL.commPrefixPlayerConst = "PLPlayer"
 PL.commPrefixChannels = 20
 PL.commPlayerChannel = nil
 
--- Player ID system
-PL.playerIDMap = {} -- Maps player names to IDs
-PL.idToPlayerMap = {} -- Maps IDs to player names
-PL.playerID = nil -- Current player's ID
-PL.nextAvailableID = 1 -- Start IDs from 1 (0-99 possible)
+-- Player ID system - now uses raid roster IDs
+PL.playerID = nil -- Current player's raid roster ID
 
 -- Item tracking variables
 PL.currentLootItemLink = nil
@@ -51,8 +48,6 @@ PL.COMM_TIMER = "TIMER" -- For timer sync
 PL.COMM_PREFIX_PLAYER = nil
 PL.COMM_JOIN = "JOIN"
 PL.COMM_LEAVE = "LEAVE" -- For removing player from roll
-PL.COMM_ID_ASSIGN = "IDA" -- For assigning player IDs
-PL.COMM_ID_REQUEST = "IDR" -- For requesting an ID
 
 -- Class colors table
 PL.CLASS_COLORS = {
@@ -185,61 +180,21 @@ function PL:GetClassColor(name)
     return defaultColor
 end
 
--- Assign a unique ID to a player (host only)
-function PL:AssignPlayerID(playerName)
-    if not self.isHost then return nil end
-    
-    -- Normalize player name for consistent keys
-    local normalizedName = self:NormalizeName(playerName)
-    
-    -- Return existing ID if already assigned
-    if self.playerIDMap[normalizedName] then
-        return self.playerIDMap[normalizedName]
-    end
-    
-    -- Assign new ID (using modulo to keep it within 0-99)
-    local newID = self.nextAvailableID % 100
-    self.nextAvailableID = self.nextAvailableID + 1
-    
-    -- Store mappings
-    self.playerIDMap[normalizedName] = newID
-    self.idToPlayerMap[newID] = normalizedName
-    
-    -- Broadcast ID assignment to all players
-    PL:SendCommMessage(self.COMM_PREFIX_PLAYER, self.COMM_ID_ASSIGN .. ":" .. normalizedName .. "," .. newID, self:GetDistributionChannel())
-    
-    return newID
-end
-
--- Request an ID from the host
-function PL:RequestPlayerID()
-    if self.isHost then
-        -- If we're the host, just assign ourselves an ID
-        self.playerID = self:AssignPlayerID(self.playerFullName)
+-- Initialize player's raid ID
+function PL:InitializePlayerID()
+    if IsInRaid() then
+        self.playerID = UnitInRaid("player")
     else
-        -- Request ID from host
-        PL:SendCommMessage(self.COMM_PREFIX_PLAYER, self.COMM_ID_REQUEST .. ":" .. self.playerFullName, self:GetDistributionChannel())
+        self.playerID = nil
     end
 end
 
--- Get player ID (requesting one if needed)
-function PL:GetPlayerID(playerName)
-    local normalizedName = self:NormalizeName(playerName or self.playerFullName)
-    
-    -- Try to get existing ID
-    local id = self.playerIDMap[normalizedName]
-    
-    -- If no ID and we're the host, assign one
-    if not id and self.isHost then
-        id = self:AssignPlayerID(normalizedName)
-    end
-    
-    return id
-end
-
--- Get player name from ID
+-- Get player name from raid roster ID
 function PL:GetPlayerNameFromID(id)
-    return self.idToPlayerMap[id]
+    if not id or not IsInRaid() then return nil end
+    
+    local name = select(1, GetRaidRosterInfo(id))
+    return name and self:NormalizeName(name) or nil
 end
 
 -- Update player's priority in the participants list
@@ -252,7 +207,7 @@ function PL:UpdatePlayerPriority(newPriority)
         
         -- Ensure player has an ID
         if not self.playerID then
-            self:RequestPlayerID()
+            self:InitializePlayerID()
         end
         
         -- Find and update player in participants list
@@ -279,7 +234,7 @@ function PL:UpdatePlayerPriority(newPriority)
         if self.playerID then
             PL:SendCommMessage(self.COMM_PREFIX_PLAYER, self.COMM_JOIN .. ":" .. self.playerFullName .. "," .. newPriority .. "," .. self.playerID, self:GetDistributionChannel())
         else
-            -- No ID yet, broadcast without ID (it will be updated once ID is assigned)
+            -- No ID yet, broadcast without ID (fallback for non-raid situations)
             PL:SendCommMessage(self.COMM_PREFIX_PLAYER, self.COMM_JOIN .. ":" .. self.playerFullName .. "," .. newPriority, self:GetDistributionChannel())
         end
     end
@@ -443,18 +398,13 @@ function PL:StartRollSession()
     self.participants = {}
     self.playerPriority = nil -- Reset player's priority
     
-    -- Reset ID system for new session
-    self.playerIDMap = {}
-    self.idToPlayerMap = {}
-    self.nextAvailableID = 1
-    
-    -- Assign ourselves an ID as host
-    self.playerID = self:AssignPlayerID(self.playerFullName)
+    -- Set player ID from raid roster
+    self:InitializePlayerID()
     
     -- Update UI immediately to reflect state change
     self:UpdateUI(true)
 
-    -- Broadcast start message - send item link in a separate message to ensure it's intact
+    -- Broadcast start message
     PL:SendCommMessage(self.COMM_PREFIX_HOST, self.COMM_START, self:GetDistributionChannel())
     
     -- Send item link as a separate message if available
@@ -571,9 +521,9 @@ end
 function PL:JoinRoll(priority)
     if not self.sessionActive then return end
     
-    -- Ensure we have an ID or request one
+    -- Ensure we have an ID
     if not self.playerID then
-        self:RequestPlayerID()
+        self:InitializePlayerID()
     end
     
     -- Update player's priority (whether joining fresh or changing)
@@ -630,16 +580,9 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
             self.participants = {}
             self.playerPriority = nil -- Reset player's priority
             
-            -- Reset ID maps for new session
-            self.playerIDMap = {}
-            self.idToPlayerMap = {}
-            self.playerID = nil
+            -- Initialize player ID from raid roster
+            self:InitializePlayerID()
             
-            -- Request an ID from the host
-            self:RequestPlayerID()
-            
-            -- Don't try to parse item from START message
-            -- Item will come in a separate ITEM message
             print("|cff00ff00" .. self:GetDisplayName(sender) .. " started a roll session.|r")
             
             self:UpdateUI()
@@ -677,18 +620,11 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
                 if joinData[1] and joinData[2] then
                     local name = joinData[1]
                     local priority = tonumber(joinData[2])
-                    local id = tonumber(joinData[3]) -- ID might be present
-                    
-                    -- If ID is present, update our mapping
-                    if id then
-                        self.playerIDMap[self:NormalizeName(name)] = id
-                        self.idToPlayerMap[id] = self:NormalizeName(name)
-                    end
+                    local id = tonumber(joinData[3]) -- ID should be the raid roster ID
                     
                     -- Check if this is the current player
                     if self:NormalizeName(name) == normalizedPlayer then
                         self.playerPriority = priority
-                        if id then self.playerID = id end
                     end
                     
                     -- Add or update participant in the list
@@ -766,53 +702,6 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
                 end
             end
             
-        elseif message:find(self.COMM_ID_ASSIGN) == 1 then
-            -- ID assignment from host
-            local parts = {strsplit(":", message)}
-            if parts[2] then
-                local idData = {strsplit(",", parts[2])}
-                if idData[1] and idData[2] then
-                    local playerName = idData[1]
-                    local id = tonumber(idData[2])
-                    
-                    -- Store mapping
-                    self.playerIDMap[self:NormalizeName(playerName)] = id
-                    self.idToPlayerMap[id] = self:NormalizeName(playerName)
-                    
-                    -- If this is for current player, store ID
-                    if self:NormalizeName(playerName) == normalizedPlayer then
-                        self.playerID = id
-                        
-                        -- If we've already set a priority, re-broadcast with our ID
-                        if self.playerPriority then
-                            self:UpdatePlayerPriority(self.playerPriority)
-                        end
-                    end
-                    
-                    -- Update any existing participant entries
-                    for i, data in ipairs(self.participants) do
-                        if self:NormalizeName(data.name) == self:NormalizeName(playerName) then
-                            data.id = id
-                            break
-                        end
-                    end
-                    
-                    self:UpdateUI()
-                end
-            end
-            
-        elseif message:find(self.COMM_ID_REQUEST) == 1 then
-            -- ID request from a player
-            if not self.isHost then return end
-            
-            local parts = {strsplit(":", message)}
-            if parts[2] then
-                local requestingPlayer = parts[2]
-                
-                -- Assign an ID to the requesting player
-                self:AssignPlayerID(requestingPlayer)
-            end
-            
         elseif message:find(self.COMM_STOP) == 1 then
             -- Session ended with results
             self.sessionActive = false
@@ -832,7 +721,7 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
                     local id = tonumber(idPriority[1])
                     local priority = tonumber(idPriority[2])
                     
-                    -- Look up player name by ID
+                    -- Look up player name by ID using the GetRaidRosterInfo function
                     local playerName = self:GetPlayerNameFromID(id)
                     
                     if playerName then
@@ -914,14 +803,28 @@ local function OnEvent(self, event, ...)
         -- Get player's full name (with server)
         PL.playerFullName = PL:GetPlayerFullName()
         
+        -- Initialize player ID if in raid
+        if IsInRaid() then
+            PL:InitializePlayerID()
+        end
+        
         -- Load UI module
         PL:InitUI()
     elseif event == "PLAYER_ENTERING_WORLD" then
         -- Get player's full name (with server) when entering world
         PL.playerFullName = PL:GetPlayerFullName()
+        -- Initialize player ID if in raid
+        if IsInRaid() then
+            PL:InitializePlayerID()
+        end
     elseif event == "GROUP_ROSTER_UPDATE" or event == "PARTY_LOOT_METHOD_CHANGED" then
         if PL.initialized then
-            PL.commPlayerChannel = mod(UnitInRaid("player"),PL.commPrefixChannels)
+            -- Update player ID and channel when group changes
+            if IsInRaid() then
+                PL:InitializePlayerID()
+            end
+            
+            PL.commPlayerChannel = mod(UnitInRaid("player"), PL.commPrefixChannels)
             PL.COMM_PREFIX_PLAYER = PL.commPrefixPlayerConst .. tostring(PL.commPlayerChannel)
             PL:UpdateUI()
         end

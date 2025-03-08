@@ -2,7 +2,7 @@
 ## Title: PriorityLoot
 ## Notes: Priority-based loot distribution system for raids
 ## Author: Yo3k
-## Version: 0.1
+## Version: 1.0.1
 ## SavedVariables: PriorityLootDB
 ## DefaultState: enabled
 
