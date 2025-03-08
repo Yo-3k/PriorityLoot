@@ -27,6 +27,8 @@ PL.timerEndTime = 0
 PL.timerFrame = nil
 PL.playerPriority = nil -- Track current player's selected priority
 PL.commPrefixPlayerConst = "PLPlayer"
+PL.commPrefixChannels = 20
+PL.commPlayerChannel = nil
 
 -- Player ID system
 PL.playerIDMap = {} -- Maps player names to IDs
@@ -894,17 +896,18 @@ local function OnEvent(self, event, ...)
         end)
 
         -- register channels for all members
-        for i = 1, 40 do
+        for i = 1, PL.commPrefixChannels do
 		    PL:RegisterComm(PL.commPrefixPlayerConst .. tostring(i), function(prefix, message, distribution, sender)
                 PL:OnCommReceived(prefix, message, distribution, sender)
             end)
-            if i == 40 then
+            if i == PL.commPrefixChannels then
                 break
             end
         end
 
         if IsInRaid() then
-            PL.COMM_PREFIX_PLAYER = PL.commPrefixPlayerConst .. UnitInRaid("player")
+            PL.commPlayerChannel = mod(UnitInRaid("player"),PL.commPrefixChannels)
+            PL.COMM_PREFIX_PLAYER = PL.commPrefixPlayerConst .. tostring(PL.commPlayerChannel)
         end
 
         -- Get player's full name (with server)
@@ -917,7 +920,8 @@ local function OnEvent(self, event, ...)
         PL.playerFullName = PL:GetPlayerFullName()
     elseif event == "GROUP_ROSTER_UPDATE" or event == "PARTY_LOOT_METHOD_CHANGED" then
         if PL.initialized then
-            PL.COMM_PREFIX_PLAYER = PL.commPrefixPlayerConst .. UnitInRaid("player")
+            PL.commPlayerChannel = mod(UnitInRaid("player"),PL.commPrefixChannels)
+            PL.COMM_PREFIX_PLAYER = PL.commPrefixPlayerConst .. tostring(PL.commPlayerChannel)
             PL:UpdateUI()
         end
     end
