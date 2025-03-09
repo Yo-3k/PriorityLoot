@@ -822,10 +822,9 @@ local function OnEvent(self, event, ...)
             -- Update player ID and channel when group changes
             if IsInRaid() then
                 PL:InitializePlayerID()
+                PL.commPlayerChannel = mod(UnitInRaid("player"), PL.commPrefixChannels)
+                PL.COMM_PREFIX_PLAYER = PL.commPrefixPlayerConst .. tostring(PL.commPlayerChannel)
             end
-            
-            PL.commPlayerChannel = mod(UnitInRaid("player"), PL.commPrefixChannels)
-            PL.COMM_PREFIX_PLAYER = PL.commPrefixPlayerConst .. tostring(PL.commPlayerChannel)
             PL:UpdateUI()
         end
     end
