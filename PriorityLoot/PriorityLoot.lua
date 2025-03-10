@@ -31,6 +31,9 @@ PL.commPrefixChannels = 20
 PL.commPlayerChannel = nil
 PL.shiftClickEnabled = true -- Flag to control shift-click functionality
 
+-- Store disabled priorities
+PL.disabledPriorities = {}
+
 -- Player ID system - now uses raid roster IDs
 PL.playerID = nil -- Current player's raid roster ID
 
@@ -62,6 +65,49 @@ PL.CLASS_COLORS = {
     ["WARLOCK"] = "9482C9",
     ["DRUID"] = "FF7D0A"
 }
+
+-- Load/Save disabled priorities from SavedVariables
+function PL:LoadDisabledPriorities()
+    -- Initialize from saved variables or create new table
+    if PriorityLootDB and PriorityLootDB.disabledPriorities then
+        self.disabledPriorities = PriorityLootDB.disabledPriorities
+    else
+        self.disabledPriorities = {}
+    end
+end
+
+-- Save disabled priorities to SavedVariables
+function PL:SaveDisabledPriorities()
+    if not PriorityLootDB then PriorityLootDB = {} end
+    PriorityLootDB.disabledPriorities = self.disabledPriorities
+end
+
+-- Toggle disabled state for a priority
+function PL:TogglePriorityDisabled(priority)
+    -- Only allow toggling when no roll is active
+    if self.sessionActive then return end
+    
+    if self.disabledPriorities[priority] then
+        -- Enable this priority
+        self.disabledPriorities[priority] = nil
+        print("|cff00ff00Priority " .. priority .. " is now enabled.|r")
+    else
+        -- Disable this priority
+        self.disabledPriorities[priority] = true
+        print("|cffff9900Priority " .. priority .. " is now disabled.|r")
+    end
+    
+    -- Save changes
+    self:SaveDisabledPriorities()
+    
+    -- Update UI to reflect changes
+    self:UpdateUI()
+end
+
+-- Check if a priority is disabled
+function PL:IsPriorityDisabled(priority)
+    return self.disabledPriorities[priority] == true
+end
 
 -- Get player's full name with server
 function PL:GetPlayerFullName()
@@ -522,6 +568,12 @@ end
 function PL:JoinRoll(priority)
     if not self.sessionActive then return end
     
+    -- Check if priority is disabled
+    if self:IsPriorityDisabled(priority) then
+        print("|cffff0000Cannot use disabled priority " .. priority .. ".|r")
+        return
+    end
+    
     -- Ensure we have an ID
     if not self.playerID then
         self:InitializePlayerID()
@@ -830,6 +882,9 @@ local function OnEvent(self, event, ...)
         if IsInRaid() then
             PL:InitializePlayerID()
         end
+        
+        -- Load disabled priorities
+        PL:LoadDisabledPriorities()
         
         -- Hook ChatEdit_InsertLink for shift-click functionality
         local originalChatEdit_InsertLink = ChatEdit_InsertLink

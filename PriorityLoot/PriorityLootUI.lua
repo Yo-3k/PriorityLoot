@@ -93,6 +93,28 @@ function PL:UpdateParticipantsList()
     self.playerListContent:SetHeight(math.max(140, yOffset))
 end
 
+-- Apply visual indication for disabled priorities
+function PL:ApplyDisabledVisual(button, priority)
+    if not button then return end
+    
+    if self:IsPriorityDisabled(priority) then
+        -- Create or show the disabled overlay
+        if not button.disabledOverlay then
+            button.disabledOverlay = button:CreateTexture(nil, "OVERLAY")
+            button.disabledOverlay:SetTexture("Interface\\Buttons\\UI-GroupLoot-Pass-Down")
+            button.disabledOverlay:SetBlendMode("ADD")
+            button.disabledOverlay:SetVertexColor(1, 0, 0, 0.7) -- Red tint
+            button.disabledOverlay:SetAllPoints(button)
+        end
+        button.disabledOverlay:Show()
+    else
+        -- Hide the overlay if it exists
+        if button.disabledOverlay then
+            button.disabledOverlay:Hide()
+        end
+    end
+end
+
 -- Update UI based on session state
 function PL:UpdateUI()
     if not self.PriorityLootFrame then return end
@@ -111,15 +133,24 @@ function PL:UpdateUI()
         
         -- Enable priority buttons
         for i = 1, 19 do
-            self.priorityButtons[i]:SetEnabled(true)
-            
-            -- Highlight current selection
-            if self.playerPriority and self.playerPriority == i then
-                self.priorityButtons[i]:SetNormalFontObject("GameFontHighlight")
-                self.priorityButtons[i]:LockHighlight()
+            -- During active session, only enable non-disabled buttons
+            if self:IsPriorityDisabled(i) then
+                -- Disabled priorities can't be selected during a roll
+                self.priorityButtons[i]:SetEnabled(false)
+                -- Keep the disabled visual
+                self:ApplyDisabledVisual(self.priorityButtons[i], i)
             else
-                self.priorityButtons[i]:SetNormalFontObject("GameFontNormal")
-                self.priorityButtons[i]:UnlockHighlight()
+                -- Enable non-disabled priorities
+                self.priorityButtons[i]:SetEnabled(true)
+                
+                -- Highlight current selection
+                if self.playerPriority and self.playerPriority == i then
+                    self.priorityButtons[i]:SetNormalFontObject("GameFontHighlight")
+                    self.priorityButtons[i]:LockHighlight()
+                else
+                    self.priorityButtons[i]:SetNormalFontObject("GameFontNormal")
+                    self.priorityButtons[i]:UnlockHighlight()
+                end
             end
         end
         
@@ -141,11 +172,16 @@ function PL:UpdateUI()
         self.timerCheckbox:SetEnabled(canStartRoll)
         self.timerEditBox:SetEnabled(canStartRoll and self.timerCheckbox:GetChecked())
         
-        -- Disable priority buttons
+        -- For non-session state, we actually need to enable the buttons
+        -- so they can receive click events, but visually indicate they're inactive
         for i = 1, 19 do
-            self.priorityButtons[i]:SetEnabled(false)
+            -- Enable button for click events (important!)
+            self.priorityButtons[i]:SetEnabled(true)
             self.priorityButtons[i]:SetNormalFontObject("GameFontNormal")
             self.priorityButtons[i]:UnlockHighlight()
+            
+            -- Apply visual for disabled priorities
+            self:ApplyDisabledVisual(self.priorityButtons[i], i)
         end
         
         -- Disable clear button
@@ -519,8 +555,46 @@ function PL:InitUI()
         local yPos = (row - 1) * (buttonHeight + buttonSpacing)
         button:SetPoint("TOPLEFT", xPos, -yPos)
         button:SetText(i)
-        button:SetEnabled(false)
-        button:SetScript("OnClick", function() self:JoinRoll(i) end)
+        
+        -- Enable buttons for right-clicking
+        button:EnableMouse(true)
+        button:RegisterForClicks("AnyUp")
+        
+        -- Add tooltip
+        button:SetScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:AddLine("Priority " .. i)
+            GameTooltip:AddLine("Left-click to select this priority during a roll", 0, 1, 0)
+            GameTooltip:AddLine("Right-click to disable/enable this priority", 1, 0.82, 0)
+            if PL:IsPriorityDisabled(i) then
+                GameTooltip:AddLine("This priority is currently disabled", 1, 0, 0)
+            end
+            GameTooltip:Show()
+        end)
+        
+        button:SetScript("OnLeave", function()
+            GameTooltip:Hide()
+        end)
+        
+        -- Click handler
+        button:SetScript("OnClick", function(self, buttonType)
+            if buttonType == "LeftButton" and PL.sessionActive then
+                -- Left-click during active roll
+                if not PL:IsPriorityDisabled(i) then
+                    PL:JoinRoll(i)
+                else
+                    print("|cffff0000Priority " .. i .. " is disabled and cannot be selected.|r")
+                end
+            elseif buttonType == "LeftButton" and not PL.sessionActive then
+                    print("|cffff0000Cannot set priority, no roll ongoing.|r")
+            elseif buttonType == "RightButton" and not PL.sessionActive then
+                -- Right-click when no active roll to toggle disabled state
+                PL:TogglePriorityDisabled(i)
+            end
+        end)
+        
+        -- Apply initial disabled visual if needed
+        self:ApplyDisabledVisual(button, i)
         
         self.priorityButtons[i] = button
     end
