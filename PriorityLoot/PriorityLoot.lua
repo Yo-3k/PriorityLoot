@@ -4,7 +4,7 @@
 
 -- Addon metadata
 local addonName, PL = ...
-PL.version = "1.0.2"
+PL.version = "1.0.3"
 PL.interfaceVersion = 11506 -- Classic SoD
 
 -- Pull in AceComm
@@ -29,6 +29,7 @@ PL.playerPriority = nil -- Track current player's selected priority
 PL.commPrefixPlayerConst = "PLPlayer"
 PL.commPrefixChannels = 20
 PL.commPlayerChannel = nil
+PL.shiftClickEnabled = true -- Flag to control shift-click functionality
 
 -- Player ID system - now uses raid roster IDs
 PL.playerID = nil -- Current player's raid roster ID
@@ -559,6 +560,28 @@ function PL:HasPlayerJoined(name)
     return false
 end
 
+-- NEW FUNCTION: Handle shift-click item selection and auto-start roll
+function PL:HandleShiftClickItem(itemLink)
+    -- Check if shift-click functionality is enabled
+    if not self.shiftClickEnabled then return false end
+    
+    -- Check if addon is visible
+    if not self.PriorityLootFrame:IsVisible() then return false end
+    
+    -- Check if we're in a raid and the master looter
+    if not IsInRaid() or not self:IsMasterLooter() then return false end
+    
+    -- Check if a session is already active
+    if self.sessionActive then return false end
+    
+    -- Set the item and start the roll
+    self:SetCurrentItem(itemLink)
+    self:StartRollSession()
+    
+    -- Return true to indicate we've handled the shift-click
+    return true
+end
+
 -- Handle addon communication
 function PL:OnCommReceived(prefix, message, distribution, sender)
     if not string.match(prefix, "PL.*") then return end
@@ -806,6 +829,19 @@ local function OnEvent(self, event, ...)
         -- Initialize player ID if in raid
         if IsInRaid() then
             PL:InitializePlayerID()
+        end
+        
+        -- Hook ChatEdit_InsertLink for shift-click functionality
+        local originalChatEdit_InsertLink = ChatEdit_InsertLink
+        ChatEdit_InsertLink = function(text, ...)
+            -- If it's an item link and our addon is handling it, don't pass to chat
+            if text and text:match("|Hitem:") then
+                if PL:HandleShiftClickItem(text) then
+                    return true
+                end
+            end
+            -- If we're not handling it, pass to original function
+            return originalChatEdit_InsertLink(text, ...)
         end
         
         -- Load UI module

@@ -22,6 +22,9 @@ PL.itemDisplayFrame = nil
 PL.itemIcon = nil
 PL.itemText = nil
 
+-- NEW: Shift-click toggle
+PL.shiftClickCheckbox = nil
+
 -- Update the timer display
 function PL:UpdateTimerDisplay(remainingTime)
     if not self.timerDisplay then return end
@@ -155,6 +158,11 @@ function PL:UpdateUI()
         end
     end
     
+    -- Shift-click checkbox - only enable for loot master
+    if self.shiftClickCheckbox then
+        self.shiftClickCheckbox:SetEnabled(self:IsMasterLooter())
+    end
+    
     -- Session info text
     if self.sessionInfoText then
         if self.sessionActive then
@@ -247,7 +255,7 @@ function PL:CreateItemDropFrame()
     -- Add text for instructions
     local dropText = dropFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     dropText:SetPoint("CENTER")
-    dropText:SetText("Drag item here")
+    dropText:SetText("Drag item here or Shift-click")
     
     -- Make it receive item drag & drop
     dropFrame:RegisterForDrag("LeftButton")
@@ -368,7 +376,7 @@ end
 function PL:InitUI()
     -- Main frame
     self.PriorityLootFrame = CreateFrame("Frame", "PriorityLootFrame", UIParent, "BackdropTemplate")
-    self.PriorityLootFrame:SetSize(260, 500)
+    self.PriorityLootFrame:SetSize(260, 525) -- Increased height to accommodate new checkbox
     self.PriorityLootFrame:SetPoint("CENTER")
     self.PriorityLootFrame:SetBackdrop({
         bgFile = "Interface/Tooltips/UI-Tooltip-Background",
@@ -442,23 +450,34 @@ function PL:InitUI()
         editBox:ClearFocus()
     end)
     
-    -- Host controls
+    -- NEW: Add shift-click checkbox
+    self.shiftClickCheckbox = CreateFrame("CheckButton", "PriorityLootShiftClickCheckbox", self.PriorityLootFrame, "UICheckButtonTemplate")
+    self.shiftClickCheckbox:SetPoint("TOPLEFT", 20, -70) -- Position below timer checkbox
+    self.shiftClickCheckbox:SetSize(24, 24)
+    _G[self.shiftClickCheckbox:GetName() .. "Text"]:SetText("Enable Shift-click items")
+    self.shiftClickCheckbox:SetChecked(true) -- Default to checked
+    self.shiftClickCheckbox:SetScript("OnClick", function(checkBox)
+        local isChecked = checkBox:GetChecked()
+        self.shiftClickEnabled = isChecked
+    end)
+    
+    -- Host controls - move down to accommodate new checkbox
     self.startButton = CreateFrame("Button", "PriorityLootStartButton", self.PriorityLootFrame, "UIPanelButtonTemplate")
     self.startButton:SetSize(100, 24)
-    self.startButton:SetPoint("TOPLEFT", 20, -70)
+    self.startButton:SetPoint("TOPLEFT", 20, -98) -- Moved down to accommodate shift-click checkbox
     self.startButton:SetText("Start Roll")
     self.startButton:SetScript("OnClick", function() self:StartRollSession() end)
     
     self.stopButton = CreateFrame("Button", "PriorityLootStopButton", self.PriorityLootFrame, "UIPanelButtonTemplate")
     self.stopButton:SetSize(100, 24)
-    self.stopButton:SetPoint("TOPRIGHT", -20, -70)
+    self.stopButton:SetPoint("TOPRIGHT", -20, -98) -- Moved down to match startButton
     self.stopButton:SetText("Stop Roll")
     self.stopButton:SetEnabled(false)
     self.stopButton:SetScript("OnClick", function() self:StopRollSession() end)
     
-    -- Current session info
+    -- Current session info - adjust position
     local sessionInfoText = self.PriorityLootFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    sessionInfoText:SetPoint("TOP", 0, -100)
+    sessionInfoText:SetPoint("TOP", 0, -128) -- Moved down to accommodate the new controls
     sessionInfoText:SetText("No active roll session")
     self.sessionInfoText = sessionInfoText
     
@@ -487,7 +506,7 @@ function PL:InitUI()
     local priorityFrame = CreateFrame("Frame", nil, self.PriorityLootFrame)
     priorityFrame:SetSize(totalWidth, totalHeight)
     -- Center it horizontally and position it below the item display with more space
-    priorityFrame:SetPoint("TOP", self.PriorityLootFrame, "TOP", 0, -200)
+    priorityFrame:SetPoint("TOP", self.PriorityLootFrame, "TOP", 0, -220)
     
     -- Priority buttons (1-19, arranged in rows of 5)
     for i = 1, 19 do
