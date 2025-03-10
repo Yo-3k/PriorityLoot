@@ -583,7 +583,7 @@ function PL:StopRollSession()
         
         -- Show trade button if there are multiple winners (even if loot master is one of them)
         -- or if there's one winner and it's not the loot master
-        if self:IsMasterLooter() then
+        if self:IsMasterLooter() and self.currentLootItemLink then
             if #self.rollWinners > 1 or (#self.rollWinners == 1 and not self:IsPlayerWinner(self.playerFullName)) then
                 self.showTradeButton = true
             end
