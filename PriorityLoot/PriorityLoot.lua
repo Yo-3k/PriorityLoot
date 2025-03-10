@@ -31,6 +31,12 @@ PL.commPrefixChannels = 20
 PL.commPlayerChannel = nil
 PL.shiftClickEnabled = true -- Flag to control shift-click functionality
 
+-- New trade functionality variables
+PL.rollWinners = {} -- Store winners of the last roll
+PL.lastRollItem = nil -- Store the item from the last roll
+PL.showTradeButton = false -- Control visibility of trade button
+PL.isTradeActive = false -- Track if current trade was initiated by the addon
+
 -- Store disabled priorities
 PL.disabledPriorities = {}
 
@@ -377,8 +383,8 @@ function PL:StopTimer()
         self.timerFrame:SetScript("OnUpdate", nil)
     end
     
-    -- Clear the timer display
-    if self.timerDisplay then
+    -- Clear the timer display only if trade button shouldn't be shown
+    if self.timerDisplay and not self.showTradeButton then
         self.timerDisplay:SetText("")
     end
     
@@ -444,6 +450,9 @@ function PL:StartRollSession()
     self.sessionHost = self.playerFullName
     self.participants = {}
     self.playerPriority = nil -- Reset player's priority
+    
+    -- Reset trade UI when starting a new roll
+    self.showTradeButton = false
     
     -- Set player ID from raid roster
     self:InitializePlayerID()
@@ -542,10 +551,13 @@ function PL:StopRollSession()
         -- Find all players with the same highest priority
         local highestPriority = self.participants[1].priority
         local winners = {}
+        self.rollWinners = {} -- Clear previous winners
         
         for i, data in ipairs(self.participants) do
             if data.priority == highestPriority then
                 table.insert(winners, self:GetDisplayName(data.name) .. " (" .. data.priority .. ")")
+                -- Store full player name for trade functionality
+                table.insert(self.rollWinners, data.name)
             else
                 -- Stop once we reach a different priority
                 break
@@ -558,6 +570,14 @@ function PL:StopRollSession()
         -- Use consistent channel for announcements
         local chatChannel = IsInRaid() and "RAID_WARNING" or "PARTY"
         SendChatMessage(resultMessage, chatChannel)
+        
+        -- Store the rolled item for trading
+        self.lastRollItem = self.currentLootItemLink
+        
+        -- Show trade button only for the loot master and only if they're not the winner
+        if self:IsMasterLooter() and not self:IsPlayerWinner(self.playerFullName) then
+            self.showTradeButton = true
+        end
     end
 
     -- Final UI update
@@ -632,6 +652,105 @@ function PL:HandleShiftClickItem(itemLink)
     
     -- Return true to indicate we've handled the shift-click
     return true
+end
+
+-- NEW FUNCTION: Initiate trade with a player
+function PL:InitiateTradeWithPlayer(playerName)
+    if not playerName then return end
+    
+    -- Check if the player exists and is in the raid
+    if not UnitExists(playerName) and not UnitInRaid(playerName) then
+        -- Try to find the player in the raid roster
+        local found = false
+        local displayName = self:GetDisplayName(playerName)
+        
+        for i = 1, GetNumGroupMembers() do
+            local raidName = GetRaidRosterInfo(i)
+            if raidName and raidName == displayName then
+                playerName = "raid" .. i
+                found = true
+                break
+            end
+        end
+        
+        if not found then
+            print("|cffff0000Player " .. displayName .. " not found in raid.|r")
+            return
+        end
+    end
+    
+    -- Set flag to indicate that this trade was initiated by PriorityLoot
+    self.isTradeActive = true
+    
+    -- Open trade window with the selected player
+    InitiateTrade(playerName)
+    
+    -- Register event to catch when trade window opens
+    if not self.tradeEventFrame then
+        self.tradeEventFrame = CreateFrame("Frame")
+        self.tradeEventFrame:RegisterEvent("TRADE_SHOW")
+        self.tradeEventFrame:SetScript("OnEvent", function(frame, event)
+            if event == "TRADE_SHOW" and self.lastRollItem and self.isTradeActive then
+                -- Add item to trade window when it opens
+                self:AddItemToTradeWindow()
+            end
+        end)
+    end
+    
+    print("|cff00ff00Initiating trade with " .. self:GetDisplayName(playerName) .. ".|r")
+end
+
+-- NEW FUNCTION: Add the rolled item to the trade window
+function PL:AddItemToTradeWindow()
+    if not self.lastRollItem then return end
+    
+    -- Find the item in player's bags
+    local itemFound = false
+    local itemID = GetItemInfoInstant(self.lastRollItem)
+    
+    if not itemID then
+        print("|cffff0000Could not get item info for " .. self.lastRollItem .. ".|r")
+        return
+    end
+    
+    -- Search through bags
+    for bagID = 0, NUM_BAG_SLOTS do
+        for slot = 1, GetContainerNumSlots(bagID) do
+            local _, count, _, _, _, _, link = GetContainerItemInfo(bagID, slot)
+            if link and link == self.lastRollItem then
+                -- Place item in the first trade slot
+                PickupContainerItem(bagID, slot)
+                ClickTradeButton(1)
+                itemFound = true
+                break
+            end
+        end
+        if itemFound then break end
+    end
+    
+    if not itemFound then
+        print("|cffff0000Item " .. self.lastRollItem .. " not found in your bags.|r")
+    end
+end
+
+-- NEW FUNCTION: Reset trade UI state
+function PL:ResetTradeUI()
+    self.showTradeButton = false
+    if self.tradeWinnerFrame and self.tradeWinnerFrame:IsShown() then
+        self.tradeWinnerFrame:Hide()
+    end
+    self:UpdateUI()
+end
+
+-- NEW FUNCTION: Check if player is among the winners
+function PL:IsPlayerWinner(playerName)
+    local normalizedPlayer = self:NormalizeName(playerName)
+    for _, winnerName in ipairs(self.rollWinners) do
+        if self:NormalizeName(winnerName) == normalizedPlayer then
+            return true
+        end
+    end
+    return false
 end
 
 -- Handle addon communication
@@ -831,6 +950,31 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
     end
 end
 
+-- Register for trade events
+function PL:RegisterTradeEvents()
+    if not self.tradeCompleteFrame then
+        self.tradeCompleteFrame = CreateFrame("Frame")
+        self.tradeCompleteFrame:RegisterEvent("TRADE_ACCEPT_UPDATE")
+        self.tradeCompleteFrame:RegisterEvent("TRADE_CLOSED")
+        self.tradeCompleteFrame:SetScript("OnEvent", function(frame, event, player1Accepted, player2Accepted)
+            -- Only process events for trades initiated by our addon
+            if not self.isTradeActive then return end
+            
+            if event == "TRADE_ACCEPT_UPDATE" and player1Accepted == 1 and player2Accepted == 1 then
+                -- Trade completed successfully when both players have accepted
+                print("|cff00ff00Trade completed successfully.|r")
+                -- Reset trade UI and flag
+                self.isTradeActive = false
+                self:ResetTradeUI()
+            elseif event == "TRADE_CLOSED" then
+                -- Reset trade UI and flag when trade window is closed
+                self.isTradeActive = false
+                self:ResetTradeUI()
+            end
+        end)
+    end
+end
+
 -- Define slash command handler
 function PL:SlashCommandHandler(msg)
     if not self.initialized then
@@ -885,6 +1029,9 @@ local function OnEvent(self, event, ...)
         
         -- Load disabled priorities
         PL:LoadDisabledPriorities()
+        
+        -- Register trade events
+        PL:RegisterTradeEvents()
         
         -- Hook ChatEdit_InsertLink for shift-click functionality
         local originalChatEdit_InsertLink = ChatEdit_InsertLink

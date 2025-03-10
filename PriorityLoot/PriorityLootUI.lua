@@ -25,6 +25,10 @@ PL.itemText = nil
 -- NEW: Shift-click toggle
 PL.shiftClickCheckbox = nil
 
+-- Trade UI elements
+PL.tradeButton = nil
+PL.tradeWinnerFrame = nil
+
 -- Update the timer display
 function PL:UpdateTimerDisplay(remainingTime)
     if not self.timerDisplay then return end
@@ -115,6 +119,113 @@ function PL:ApplyDisabledVisual(button, priority)
     end
 end
 
+-- Create trade button and winner selection UI
+function PL:CreateTradeUI()
+    if self.tradeButton then return end
+    
+    -- Create trade button at the same place as timer display
+    self.tradeButton = CreateFrame("Button", "PriorityLootTradeButton", self.PriorityLootFrame, "UIPanelButtonTemplate")
+    self.tradeButton:SetSize(100, 24)
+    self.tradeButton:SetPoint("TOP", self.timerDisplay, "TOP", 0, 0)
+    self.tradeButton:SetText("Trade Item")
+    self.tradeButton:Hide()
+    
+    self.tradeButton:SetScript("OnClick", function()
+        -- Toggle winner selection frame
+        if self.tradeWinnerFrame and self.tradeWinnerFrame:IsShown() then
+            self.tradeWinnerFrame:Hide()
+        else
+            self:ShowWinnerSelectionUI()
+        end
+    end)
+    
+    -- Create frame for winner selection (initially hidden)
+    self.tradeWinnerFrame = CreateFrame("Frame", "PriorityLootWinnerFrame", self.PriorityLootFrame, "BackdropTemplate")
+    self.tradeWinnerFrame:SetSize(180, 150)
+    self.tradeWinnerFrame:SetPoint("TOP", self.tradeButton, "BOTTOM", 0, -5)
+    self.tradeWinnerFrame:SetBackdrop({
+        bgFile = "Interface/Tooltips/UI-Tooltip-Background",
+        edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
+        tile = true, tileSize = 16, edgeSize = 16,
+        insets = { left = 4, right = 4, top = 4, bottom = 4 }
+    })
+    self.tradeWinnerFrame:SetBackdropColor(0, 0, 0, 0.8)
+    -- Set to foreground
+    self.tradeWinnerFrame:SetFrameStrata("HIGH")
+    self.tradeWinnerFrame:Hide()
+    
+    -- Add close button to winner frame
+    local closeWinnerButton = CreateFrame("Button", nil, self.tradeWinnerFrame, "UIPanelCloseButton")
+    closeWinnerButton:SetPoint("TOPRIGHT", -2, -2)
+    closeWinnerButton:SetScript("OnClick", function()
+        self.tradeWinnerFrame:Hide()
+    end)
+    
+    -- Create title for winner frame
+    local winnerTitle = self.tradeWinnerFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    winnerTitle:SetPoint("TOP", 0, -10)
+    winnerTitle:SetText("Select Winner to Trade:")
+    
+    -- Create a scroll frame for winners
+    local winnerScroll = CreateFrame("ScrollFrame", "PriorityLootWinnerScroll", self.tradeWinnerFrame, "UIPanelScrollFrameTemplate")
+    winnerScroll:SetPoint("TOPLEFT", 10, -30)
+    winnerScroll:SetPoint("BOTTOMRIGHT", -30, 10)
+    
+    -- Create content frame for the scroll frame
+    local winnerContent = CreateFrame("Frame", "PriorityLootWinnerContent", winnerScroll)
+    winnerContent:SetSize(150, 100)
+    winnerScroll:SetScrollChild(winnerContent)
+    
+    -- Store reference to content frame
+    self.tradeWinnerContent = winnerContent
+end
+
+-- Show winner selection UI and populate with winners
+function PL:ShowWinnerSelectionUI()
+    if not self.tradeWinnerFrame then return end
+    
+    -- Clear existing entries
+    for _, child in ipairs({self.tradeWinnerContent:GetChildren()}) do
+        child:Hide()
+    end
+    
+    -- Populate with winners
+    local yOffset = 0
+    for i, winnerName in ipairs(self.rollWinners) do
+        local button = CreateFrame("Button", nil, self.tradeWinnerContent)
+        button:SetSize(150, 25)
+        button:SetPoint("TOPLEFT", 0, -yOffset)
+        
+        -- Get class color
+        local classColor = self:GetClassColor(winnerName)
+        
+        -- Create highlighted text
+        local buttonText = button:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        buttonText:SetPoint("LEFT", 5, 0)
+        buttonText:SetText("|cff" .. classColor .. self:GetDisplayName(winnerName) .. "|r")
+        
+        -- Create background highlight on hover
+        button:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight", "ADD")
+        
+        -- Click handler
+        button:SetScript("OnClick", function()
+            -- Close the winner frame
+            self.tradeWinnerFrame:Hide()
+            
+            -- Initiate trade with selected player
+            self:InitiateTradeWithPlayer(winnerName)
+        end)
+        
+        yOffset = yOffset + 25
+    end
+    
+    -- Adjust content height based on number of winners
+    self.tradeWinnerContent:SetHeight(math.max(100, yOffset))
+    
+    -- Show the frame
+    self.tradeWinnerFrame:Show()
+end
+
 -- Update UI based on session state
 function PL:UpdateUI()
     if not self.PriorityLootFrame then return end
@@ -165,6 +276,14 @@ function PL:UpdateUI()
                 self.yourPriorityText:SetText("Your priority: None")
             end
         end
+        
+        -- Hide trade button during active session
+        if self.tradeButton then
+            self.tradeButton:Hide()
+        end
+        if self.tradeWinnerFrame and self.tradeWinnerFrame:IsShown() then
+            self.tradeWinnerFrame:Hide()
+        end
     else
         -- Not in session
         self.startButton:SetEnabled(canStartRoll)
@@ -191,6 +310,19 @@ function PL:UpdateUI()
         self.playerPriority = nil
         if self.yourPriorityText then
             self.yourPriorityText:SetText("Your priority: None")
+        end
+        
+        -- Handle trade button visibility
+        if self.tradeButton then
+            if self.showTradeButton and self:IsMasterLooter() and #self.rollWinners > 0 then
+                self.tradeButton:Show()
+                -- Hide timer display when trade button is shown
+                if self.timerDisplay then
+                    self.timerDisplay:SetText("")
+                end
+            else
+                self.tradeButton:Hide()
+            end
         end
     end
     
@@ -645,6 +777,9 @@ function PL:InitUI()
     -- Close button
     local closeButton = CreateFrame("Button", nil, self.PriorityLootFrame, "UIPanelCloseButton")
     closeButton:SetPoint("TOPRIGHT", 0, 0)
+    
+    -- Create trade UI
+    self:CreateTradeUI()
     
     -- Hide by default
     self.PriorityLootFrame:Hide()
