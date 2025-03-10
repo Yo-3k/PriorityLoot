@@ -16,8 +16,10 @@ Addon supporting loot distribution with priorities from 1-19
   This works only if the shift-click option is enabled via a checkbox, to no interfere with the original WoW shift-click
   function in case PriorityLoot is not used.
 - When a roll is finished, the master looter can auto-distribute the loot via the "Trade" button
-- The first five participants of a roll are displayed as winners, in case multiple of the same item are distributed with one roll. In case more than 5 people have the same "highest" prio, all are displayed.
+- The first five participants of a roll are displayed as winners, in case multiple of the same item are distributed with one
+  roll. In case more than 5 people have the same "highest" prio, all are displayed.
 - Individual priorities can be disabled via right-click on each client (not synchronized) to give a visual representation of the
   available priorities.
 - **IMPORTANT:** After trading the last item in a loot distribution session, the MasterLooter must clear the item 
-  selection with the "x" button, otherwhise he will continue trying to trade the last item when casually trading other people. This is because the Add-on currently does not know how many items of the same type will be traded.
+  selection with the "x" button, otherwise he will continue trying to trade the last item when casually trading 
+  other people. This is because the Add-on currently does not know how many items of the same type will be traded.
