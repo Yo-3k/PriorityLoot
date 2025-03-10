@@ -555,24 +555,20 @@ function PL:StopRollSession()
             resultMessage = "Roll results: "
         end
         
-        -- Find all players with the same highest priority
-        local highestPriority = self.participants[1].priority
-        local winners = {}
+        -- Get the first five players with the lowest priority (participants are already sorted)
+        local topFiveText = {}
         self.rollWinners = {} -- Clear previous winners
         
-        for i, data in ipairs(self.participants) do
-            if data.priority == highestPriority then
-                table.insert(winners, self:GetDisplayName(data.name) .. " (" .. data.priority .. ")")
-                -- Store full player name for trade functionality
-                table.insert(self.rollWinners, data.name)
-            else
-                -- Stop once we reach a different priority
-                break
-            end
+        -- Add top 5 players to results (limited to available participants)
+        for i = 1, math.min(5, #self.participants) do
+            local data = self.participants[i]
+            table.insert(topFiveText, self:GetDisplayName(data.name) .. " (" .. data.priority .. ")")
+            -- Store full player name for trade functionality
+            table.insert(self.rollWinners, data.name)
         end
         
-        -- Add all winners to the message
-        resultMessage = resultMessage .. table.concat(winners, ", ")
+        -- Add top five players to the message
+        resultMessage = resultMessage .. table.concat(topFiveText, ", ")
         
         -- Use consistent channel for announcements
         local chatChannel = IsInRaid() and "RAID_WARNING" or "PARTY"

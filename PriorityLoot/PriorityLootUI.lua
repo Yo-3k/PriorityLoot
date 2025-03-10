@@ -190,9 +190,28 @@ function PL:ShowWinnerSelectionUI()
         child:Hide()
     end
     
-    -- Populate with winners
-    local yOffset = 0
+    -- Create a filtered list of winners (top 5 excluding loot master)
+    local filteredWinners = {}
+    
+    -- Get loot master's name
+    local lootMasterName = self:NormalizeName(self.playerFullName)
+    
+    -- Add up to 5 winners, but skip the loot master
     for i, winnerName in ipairs(self.rollWinners) do
+        -- Skip if this is the loot master
+        if self:NormalizeName(winnerName) ~= lootMasterName then
+            table.insert(filteredWinners, winnerName)
+        end
+        
+        -- Stop after we have 5 non-loot-master winners
+        if #filteredWinners >= 5 then
+            break
+        end
+    end
+    
+    -- Populate with filtered winners
+    local yOffset = 0
+    for i, winnerName in ipairs(filteredWinners) do
         local button = CreateFrame("Button", nil, self.tradeWinnerContent)
         button:SetSize(150, 25)
         button:SetPoint("TOPLEFT", 0, -yOffset)
