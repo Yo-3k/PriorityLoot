@@ -997,7 +997,7 @@ function PL:RegisterTradeEvents()
         self.tradeEventFrame:RegisterEvent("TRADE_SHOW")
         self.tradeEventFrame:SetScript("OnEvent", function(frame, event)
             if event == "TRADE_SHOW" then
-                if self.lastRollItem then
+                if self:IsMasterLooter() and self.lastRollItem then
                     self:AddItemToTradeWindow()
                 end
             end

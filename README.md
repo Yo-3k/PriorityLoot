@@ -19,3 +19,5 @@ Addon supporting loot distribution with priorities from 1-19
 - The first five participants of a roll are displayed as winners, in case multiple of the same item are distributed with one roll. In case more than 5 people have the same "highest" prio, all are displayed.
 - Individual priorities can be disabled via right-click on each client (not synchronized) to give a visual representation of the
   available priorities.
+- **IMPORTANT:** After trading the last item in a loot distribution session, the MasterLooter must clear the item 
+  selection with the "x" button, otherwhise he will continue trying to trade the last item when casually trading other people. This is because the Add-on currently does not know how many items of the same type will be traded.
