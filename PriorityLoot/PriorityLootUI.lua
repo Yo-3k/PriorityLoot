@@ -165,7 +165,7 @@ function PL:CreateTradeUI()
     -- Create title for winner frame
     local winnerTitle = self.tradeWinnerFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
     winnerTitle:SetPoint("TOP", 0, -10)
-    winnerTitle:SetText("Select Winner to Trade:")
+    winnerTitle:SetText("Select to Trade:")
     
     -- Create a scroll frame for winners
     local winnerScroll = CreateFrame("ScrollFrame", "PriorityLootWinnerScroll", self.tradeWinnerFrame, "UIPanelScrollFrameTemplate")

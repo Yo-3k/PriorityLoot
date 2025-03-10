@@ -35,7 +35,6 @@ PL.shiftClickEnabled = true -- Flag to control shift-click functionality
 PL.rollWinners = {} -- Store winners of the last roll
 PL.lastRollItem = nil -- Store the item from the last roll
 PL.showTradeButton = false -- Control visibility of trade button
-PL.isTradeActive = false -- Track if current trade was initiated by the addon
 
 -- Store disabled priorities
 PL.disabledPriorities = {}
@@ -384,7 +383,7 @@ function PL:StopTimer()
     end
     
     -- Clear the timer display only if trade button shouldn't be shown
-    if self.timerDisplay and not self.showTradeButton then
+    if self.timerDisplay then
         self.timerDisplay:SetText("")
     end
     
@@ -705,9 +704,6 @@ function PL:InitiateTradeWithPlayer(playerName)
         end
     end
     
-    -- Set flag to indicate that this trade was initiated by PriorityLoot
-    self.isTradeActive = true
-    
     -- Open trade window with the selected player
     InitiateTrade(playerName)
     
@@ -812,6 +808,11 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
             self.participants = {}
             self.playerPriority = nil -- Reset player's priority
             
+            -- Reset trade UI completely for other players in case they have been PM before
+            self.showTradeButton = false
+            self.rollWinners = {}
+            self.lastRollItem = nil
+
             -- Initialize player ID from raid roster
             self:InitializePlayerID()
             
@@ -840,11 +841,6 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
             -- Clear local item data but don't re-broadcast
             self.currentLootItemLink = nil
             self.currentLootItemTexture = nil
-            
-            -- Reset trade UI when item is cleared
-            self.showTradeButton = false
-            self.rollWinners = {}
-            self.lastRollItem = nil
             
             -- Update UI
             self:UpdateUI()
@@ -1000,7 +996,7 @@ function PL:RegisterTradeEvents()
         self.tradeEventFrame = CreateFrame("Frame")
         self.tradeEventFrame:RegisterEvent("TRADE_SHOW")
         self.tradeEventFrame:SetScript("OnEvent", function(frame, event)
-            if event == "TRADE_SHOW" and self.isTradeActive then
+            if event == "TRADE_SHOW" then
                 if self.lastRollItem then
                     self:AddItemToTradeWindow()
                 end
