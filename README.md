@@ -3,11 +3,11 @@ Addon supporting loot distribution with priorities from 1-19
 
 ## Installation:
 1. Download the latest "Source Code (zip)" from the release section
-2. Extract the zip file "PriorityLoot-<version>"
-3. Copy the folder "PriorityLoot" (inside of "PriorityLoot-<version>") to: \
-   C:\<WoWInstallPath>World of Warcraft\_classic_era_\Interface\AddOns\*
+2. Extract the zip file "PriorityLoot-\<version>"
+3. Copy the folder "PriorityLoot" (inside of "PriorityLoot-\<version>") to: \
+   C:\\\<WoWInstallPath>\World of Warcraft\\\_classic_era_\Interface\AddOns\\*
 4. A successful installed PriorityLoot would for example contain a file like this: \
-   C:\<WoWInstallPath>World of Warcraft\_classic_era_\Interface\AddOns\PriorityLoot\PriorityLoot.toc
+   C:\\\<WoWInstallPath>\World of Warcraft\\\_classic_era_\Interface\AddOns\PriorityLoot\PriorityLoot.toc
 
 ## Features:
 - Works only in a raid
