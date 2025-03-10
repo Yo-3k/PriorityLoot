@@ -555,20 +555,40 @@ function PL:StopRollSession()
             resultMessage = "Roll results: "
         end
         
-        -- Get the first five players with the lowest priority (participants are already sorted)
-        local topFiveText = {}
+        -- Get all players with the highest priority, then up to 5 total players
+        local topPlayersText = {}
         self.rollWinners = {} -- Clear previous winners
         
-        -- Add top 5 players to results (limited to available participants)
-        for i = 1, math.min(5, #self.participants) do
-            local data = self.participants[i]
-            table.insert(topFiveText, self:GetDisplayName(data.name) .. " (" .. data.priority .. ")")
-            -- Store full player name for trade functionality
-            table.insert(self.rollWinners, data.name)
+        -- If we have participants
+        if #self.participants > 0 then
+            -- Find the lowest priority value
+            local lowestPriority = self.participants[1].priority
+            
+            -- Add all players with the lowest priority to results (even if more than 5)
+            local index = 1
+            while index <= #self.participants and self.participants[index].priority == lowestPriority do
+                local data = self.participants[index]
+                table.insert(topPlayersText, self:GetDisplayName(data.name) .. " (" .. data.priority .. ")")
+                -- Store full player name for trade functionality
+                table.insert(self.rollWinners, data.name)
+                index = index + 1
+            end
+            
+            -- Only if we have less than 5 players with the lowest priority, add more players
+            if #topPlayersText < 5 then
+                -- Continue adding players until we reach 5 or run out of participants
+                while index <= #self.participants and #topPlayersText < 5 do
+                    local data = self.participants[index]
+                    table.insert(topPlayersText, self:GetDisplayName(data.name) .. " (" .. data.priority .. ")")
+                    -- Store full player name for trade functionality
+                    table.insert(self.rollWinners, data.name)
+                    index = index + 1
+                end
+            end
         end
         
-        -- Add top five players to the message
-        resultMessage = resultMessage .. table.concat(topFiveText, ", ")
+        -- Add players to the message
+        resultMessage = resultMessage .. table.concat(topPlayersText, ", ")
         
         -- Use consistent channel for announcements
         local chatChannel = IsInRaid() and "RAID_WARNING" or "PARTY"

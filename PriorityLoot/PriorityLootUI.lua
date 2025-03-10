@@ -190,22 +190,52 @@ function PL:ShowWinnerSelectionUI()
         child:Hide()
     end
     
-    -- Create a filtered list of winners (top 5 excluding loot master)
+    -- Create a filtered list of winners (all highest priority players excluding loot master)
     local filteredWinners = {}
     
     -- Get loot master's name
     local lootMasterName = self:NormalizeName(self.playerFullName)
     
-    -- Add up to 5 winners, but skip the loot master
+    -- Find the highest priority players in the rollWinners list
+    -- First, get their priority values by looking them up in participants
+    local winnerPriorities = {}
+    local lowestPriority = nil
+    
     for i, winnerName in ipairs(self.rollWinners) do
-        -- Skip if this is the loot master
-        if self:NormalizeName(winnerName) ~= lootMasterName then
+        for j, data in ipairs(self.participants) do
+            if self:NormalizeName(data.name) == self:NormalizeName(winnerName) then
+                winnerPriorities[winnerName] = data.priority
+                
+                -- Track the lowest priority value
+                if not lowestPriority or data.priority < lowestPriority then
+                    lowestPriority = data.priority
+                end
+                
+                break
+            end
+        end
+    end
+    
+    -- Add all winners with the lowest priority first (excluding loot master)
+    for i, winnerName in ipairs(self.rollWinners) do
+        -- If this winner has the lowest priority and isn't the loot master
+        if winnerPriorities[winnerName] == lowestPriority and self:NormalizeName(winnerName) ~= lootMasterName then
             table.insert(filteredWinners, winnerName)
         end
-        
-        -- Stop after we have 5 non-loot-master winners
-        if #filteredWinners >= 5 then
-            break
+    end
+    
+    -- If we have fewer than 5 winners, add more winners up to 5 total
+    if #filteredWinners < 5 then
+        for i, winnerName in ipairs(self.rollWinners) do
+            -- Skip if already added (has lowest priority) or is loot master
+            if winnerPriorities[winnerName] ~= lowestPriority and self:NormalizeName(winnerName) ~= lootMasterName then
+                table.insert(filteredWinners, winnerName)
+                
+                -- Stop after we have 5 winners total
+                if #filteredWinners >= 5 then
+                    break
+                end
+            end
         end
     end
     
