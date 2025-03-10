@@ -126,7 +126,7 @@ function PL:CreateTradeUI()
     -- Create trade button at the same place as timer display
     self.tradeButton = CreateFrame("Button", "PriorityLootTradeButton", self.PriorityLootFrame, "UIPanelButtonTemplate")
     self.tradeButton:SetSize(100, 24)
-    self.tradeButton:SetPoint("TOP", self.timerDisplay, "TOP", 0, 0)
+    self.tradeButton:SetPoint("TOP", self.timerDisplay, "TOP", 0, 2)
     self.tradeButton:SetText("Trade Item")
     self.tradeButton:Hide()
     
@@ -149,7 +149,8 @@ function PL:CreateTradeUI()
         tile = true, tileSize = 16, edgeSize = 16,
         insets = { left = 4, right = 4, top = 4, bottom = 4 }
     })
-    self.tradeWinnerFrame:SetBackdropColor(0, 0, 0, 0.8)
+    -- Make background less transparent - changed from 0.8 to 0.95
+    self.tradeWinnerFrame:SetBackdropColor(0, 0, 0, 1)
     -- Set to foreground
     self.tradeWinnerFrame:SetFrameStrata("HIGH")
     self.tradeWinnerFrame:Hide()
