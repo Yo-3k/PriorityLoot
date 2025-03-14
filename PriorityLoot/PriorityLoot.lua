@@ -4,7 +4,7 @@
 
 -- Addon metadata
 local addonName, PL = ...
-PL.version = "1.0.3"
+PL.version = "1.0.4"
 PL.interfaceVersion = 11506 -- Classic SoD
 
 -- Pull in AceComm
