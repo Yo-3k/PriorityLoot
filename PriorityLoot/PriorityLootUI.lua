@@ -141,7 +141,7 @@ function PL:CreateTradeUI()
     
     -- Create frame for winner selection (initially hidden)
     self.tradeWinnerFrame = CreateFrame("Frame", "PriorityLootWinnerFrame", self.PriorityLootFrame, "BackdropTemplate")
-    self.tradeWinnerFrame:SetSize(180, 150)
+    self.tradeWinnerFrame:SetSize(180, 180)
     self.tradeWinnerFrame:SetPoint("TOP", self.tradeButton, "BOTTOM", 0, -5)
     self.tradeWinnerFrame:SetBackdrop({
         bgFile = "Interface/Tooltips/UI-Tooltip-Background",
@@ -174,7 +174,7 @@ function PL:CreateTradeUI()
     
     -- Create content frame for the scroll frame
     local winnerContent = CreateFrame("Frame", "PriorityLootWinnerContent", winnerScroll)
-    winnerContent:SetSize(150, 100)
+    winnerContent:SetSize(150, 130)
     winnerScroll:SetScrollChild(winnerContent)
     
     -- Store reference to content frame

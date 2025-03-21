@@ -4,7 +4,7 @@
 
 -- Addon metadata
 local addonName, PL = ...
-PL.version = "1.0.4"
+PL.version = "1.0.5"
 PL.interfaceVersion = 11506 -- Classic SoD
 
 -- Pull in AceComm
@@ -352,6 +352,11 @@ function PL:StartTimer(duration)
             self:StopTimer()
             if self.isHost then
                 self:StopRollSession()
+            else
+                -- Close session and disable UI buttons
+                self.sessionActive = false
+                -- Update UI
+                self:UpdateUI()
             end
             return
         end
@@ -528,85 +533,88 @@ function PL:StopRollSession()
     -- Update UI immediately to reflect state change
     self:UpdateUI(true)
     
-    -- Broadcast stop message with participant IDs and priorities (compact format)
-    local message = self.COMM_STOP
-    for i, data in ipairs(self.participants) do
-        if data.id then -- Only include participants with valid IDs
-            message = message .. ":" .. data.id .. "," .. data.priority
-        end
-    end
-    
-    PL:SendCommMessage(self.COMM_PREFIX_HOST, message, self:GetDistributionChannel())
-    
-    print("|cffff9900Roll session ended. Results are displayed.|r")
-    
-    -- Sort participants by priority (lower is better)
-    table.sort(self.participants, function(a, b)
-        return a.priority < b.priority
-    end)
-    
-    -- Display raid warning with results
-    if #self.participants > 0 then
-        local resultMessage = ""
-        if self.currentLootItemLink then
-            resultMessage = "Roll results for " .. self.currentLootItemLink .. ": "
-        else
-            resultMessage = "Roll results: "
+    -- Wait 500ms grace period to collect all late joiners
+    C_Timer.After(0.5, function()
+        -- Broadcast stop message with participant IDs and priorities (compact format)
+        local message = self.COMM_STOP
+        for i, data in ipairs(self.participants) do
+            if data.id then -- Only include participants with valid IDs
+                message = message .. ":" .. data.id .. "," .. data.priority
+            end
         end
         
-        -- Get all players with the highest priority, then up to 5 total players
-        local topPlayersText = {}
-        self.rollWinners = {} -- Clear previous winners
+        PL:SendCommMessage(self.COMM_PREFIX_HOST, message, self:GetDistributionChannel())
         
-        -- If we have participants
+        print("|cffff9900Roll session ended. Results are displayed.|r")
+        
+        -- Sort participants by priority (lower is better)
+        table.sort(self.participants, function(a, b)
+            return a.priority < b.priority
+        end)
+        
+        -- Display raid warning with results
         if #self.participants > 0 then
-            -- Find the lowest priority value
-            local lowestPriority = self.participants[1].priority
-            
-            -- Add all players with the lowest priority to results (even if more than 5)
-            local index = 1
-            while index <= #self.participants and self.participants[index].priority == lowestPriority do
-                local data = self.participants[index]
-                table.insert(topPlayersText, self:GetDisplayName(data.name) .. " (" .. data.priority .. ")")
-                -- Store full player name for trade functionality
-                table.insert(self.rollWinners, data.name)
-                index = index + 1
+            local resultMessage = ""
+            if self.currentLootItemLink then
+                resultMessage = "Roll results for " .. self.currentLootItemLink .. ": "
+            else
+                resultMessage = "Roll results: "
             end
             
-            -- Only if we have less than 5 players with the lowest priority, add more players
-            if #topPlayersText < 5 then
-                -- Continue adding players until we reach 5 or run out of participants
-                while index <= #self.participants and #topPlayersText < 5 do
+            -- Get all players with the highest priority, then up to 5 total players
+            local topPlayersText = {}
+            self.rollWinners = {} -- Clear previous winners
+            
+            -- If we have participants
+            if #self.participants > 0 then
+                -- Find the lowest priority value
+                local lowestPriority = self.participants[1].priority
+                
+                -- Add all players with the lowest priority to results (even if more than 5)
+                local index = 1
+                while index <= #self.participants and self.participants[index].priority == lowestPriority do
                     local data = self.participants[index]
                     table.insert(topPlayersText, self:GetDisplayName(data.name) .. " (" .. data.priority .. ")")
                     -- Store full player name for trade functionality
                     table.insert(self.rollWinners, data.name)
                     index = index + 1
                 end
+                
+                -- Only if we have less than 5 players with the lowest priority, add more players
+                if #topPlayersText < 5 then
+                    -- Continue adding players until we reach 5 or run out of participants
+                    while index <= #self.participants and #topPlayersText < 5 do
+                        local data = self.participants[index]
+                        table.insert(topPlayersText, self:GetDisplayName(data.name) .. " (" .. data.priority .. ")")
+                        -- Store full player name for trade functionality
+                        table.insert(self.rollWinners, data.name)
+                        index = index + 1
+                    end
+                end
+            end
+            
+            -- Add players to the message
+            resultMessage = resultMessage .. table.concat(topPlayersText, ", ")
+            
+            -- Use consistent channel for announcements
+            local chatChannel = IsInRaid() and "RAID_WARNING" or "PARTY"
+            SendChatMessage(resultMessage, chatChannel)
+            
+            -- Store the rolled item for trading
+            self.lastRollItem = self.currentLootItemLink
+            
+            -- Show trade button if there are multiple winners (even if loot master is one of them)
+            -- or if there's one winner and it's not the loot master
+            if self:IsMasterLooter() and self.currentLootItemLink then
+                if #self.rollWinners > 1 or (#self.rollWinners == 1 and not self:IsPlayerWinner(self.playerFullName)) then
+                    self.showTradeButton = true
+                end
             end
         end
-        
-        -- Add players to the message
-        resultMessage = resultMessage .. table.concat(topPlayersText, ", ")
-        
-        -- Use consistent channel for announcements
-        local chatChannel = IsInRaid() and "RAID_WARNING" or "PARTY"
-        SendChatMessage(resultMessage, chatChannel)
-        
-        -- Store the rolled item for trading
-        self.lastRollItem = self.currentLootItemLink
-        
-        -- Show trade button if there are multiple winners (even if loot master is one of them)
-        -- or if there's one winner and it's not the loot master
-        if self:IsMasterLooter() and self.currentLootItemLink then
-            if #self.rollWinners > 1 or (#self.rollWinners == 1 and not self:IsPlayerWinner(self.playerFullName)) then
-                self.showTradeButton = true
-            end
-        end
-    end
 
-    -- Final UI update
-    self:UpdateUI(true)
+        -- Final UI update
+        self:UpdateUI(true)
+    end)
 end
 
 -- Join a roll with selected priority
