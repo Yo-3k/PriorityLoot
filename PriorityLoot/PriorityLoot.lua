@@ -836,10 +836,9 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
             -- Extract the item link portion after the COMM_ITEM: prefix
             local itemLink = message:sub(#(self.COMM_ITEM .. ":") + 1)
             
-            if itemLink and itemLink ~= "" then
-                self:SetCurrentItem(itemLink)
-                
+            if itemLink and itemLink ~= "" then             
                 if itemLink ~= self.currentLootItemLink then
+                    self:SetCurrentItem(itemLink)
                     print("|cff00ff00" .. self:GetDisplayName(sender) .. " shared item: " .. itemLink .. ".|r")
                 end
             end
