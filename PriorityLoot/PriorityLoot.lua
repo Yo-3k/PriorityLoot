@@ -4,8 +4,8 @@
 
 -- Addon metadata
 local addonName, PL = ...
-PL.version = "1.0.5"
-PL.interfaceVersion = 11506 -- Classic SoD
+PL.version = "1.0.6"
+PL.interfaceVersion = 11507 -- Classic SoD
 
 -- Pull in AceComm
 LibStub("AceComm-3.0"):Embed(PL)
@@ -839,7 +839,9 @@ function PL:OnCommReceived(prefix, message, distribution, sender)
             if itemLink and itemLink ~= "" then
                 self:SetCurrentItem(itemLink)
                 
-                print("|cff00ff00" .. self:GetDisplayName(sender) .. " shared item: " .. itemLink .. ".|r")
+                if itemLink ~= self.currentLootItemLink then
+                    print("|cff00ff00" .. self:GetDisplayName(sender) .. " shared item: " .. itemLink .. ".|r")
+                end
             end
         
         elseif message == self.COMM_CLEAR then

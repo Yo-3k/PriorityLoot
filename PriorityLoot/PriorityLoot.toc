@@ -1,8 +1,8 @@
-## Interface: 11506
+## Interface: 11507
 ## Title: PriorityLoot
 ## Notes: Priority-based loot distribution system for raids
 ## Author: Yo3k
-## Version: 1.0.5
+## Version: 1.0.6
 ## SavedVariables: PriorityLootDB
 ## DefaultState: enabled
 
